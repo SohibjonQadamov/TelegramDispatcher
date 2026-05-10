@@ -191,7 +191,7 @@ class ProductState(StatesGroup):
 # ================= UI =================
 def main_kb(uid=None):
     rows = [
-        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index.html"))]
+        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index1.html"))]
     ]
 
     # Admin tugmalari
@@ -632,7 +632,7 @@ async def prod_cat(msg: Message, state: FSMContext):
 
 # ================= AIOHTTP & MAIN =================
 async def handle_index(request):
-    return web.FileResponse('webapp/index.html')
+    return web.FileResponse('webapp/index1.html')
 
 async def handle_admin(request):
     return web.FileResponse('webapp/admin.html')
@@ -744,7 +744,7 @@ async def main():
     # Setup aiohttp app
     app = web.Application()
     app.router.add_get('/', handle_index)
-    app.router.add_get('/index.html', handle_index)
+    app.router.add_get('/index1.html', handle_index)
     app.router.add_get('/admin.html', handle_admin)
     app.router.add_get('/api/data', handle_api_data)
     app.router.add_get('/api/admin_data', handle_admin_data)
