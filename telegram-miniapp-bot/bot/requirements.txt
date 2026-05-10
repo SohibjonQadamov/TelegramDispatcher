@@ -1,0 +1,5 @@
+aiohttp
+aiogram
+python-dotenv
+sqlite3
+requests

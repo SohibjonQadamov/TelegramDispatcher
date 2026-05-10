@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    volumes:
+      - ./bot:/app
+    env_file:
+      - .env.example
+    restart: always
+
+  mini_app:
+    build:
+      context: ./mini_app
+      dockerfile: Dockerfile
+    volumes:
+      - ./mini_app:/app
+    ports:
+      - "3000:3000"
+    restart: always
+
+networks:
+  default:
+    driver: bridge
