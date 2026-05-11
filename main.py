@@ -736,13 +736,24 @@ async def handle_delete_product(request):
 # 1. Portni dinamik qiling (Kodingizning tepa qismida)
 WEBAPP_PORT = int(os.environ.get("PORT", 10000))
 
-# 2. Main funksiyasini mana bunga almashtiring:
+
 async def main():
+    # 1. Ma'lumotlar bazasini yangilash
     init_db()
+
+    # 2. Bot va Dispatcher obyektlarini yaratish
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Setup aiohttp app
+    # 3. MUHIM: Routerni polling boshlanishidan OLDIN ulash shart!
+    # Agarda bu qator pastda bo'lsa, bot xabarlarni ko'rmaydi.
+    dp.include_router(router)
+
+    # Bot haqida ma'lumotni logga chiqarish
+    me = await bot.get_me()
+    logger.info(f"Bot started @{me.username}")
+
+    # 4. Web server sozlamalari (aiohttp)
     app = web.Application()
     app.router.add_get('/', handle_index)
     app.router.add_get('/index1.html', handle_index)
@@ -752,51 +763,25 @@ async def main():
     app.router.add_post('/api/store', handle_update_store)
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
-    
-    # MUHIM: Statik fayllar uchun yo'l (agar papka nomi webapp bo'lsa)
-    # App ichida statik fayllarni ko'rsatib qo'yish kerak
+
+    # Statik fayllar uchun (agar kerak bo'lsa)
     if os.path.exists("webapp"):
         app.router.add_static('/webapp/', path='webapp', name='webapp')
 
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # Render PORT o'zgaruvchisini ishlatsin
+
+    # Render PORT'ida web-serverni ishga tushirish
     site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
     await site.start()
-    
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    # Botni yurgizish (Webhook ishlatishni maslahat berardim, lekin polling bo'lsa ham port to'g'ri bo'lishi shart)
+    # 5. Botni polling rejimida yoqish
+    # skip_updates=True eski kelgan xabarlarni o'chirib yuboradi
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, skip_updates=True)
     finally:
         await bot.session.close()
-    init_db()
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-    me = await bot.get_me()
-    logger.info("Bot started @%s", me.username)
-    
-    # Setup aiohttp app
-    app = web.Application()
-    app.router.add_get('/', handle_index)
-    app.router.add_get('/index1.html', handle_index)
-    app.router.add_get('/admin.html', handle_admin)
-    app.router.add_get('/api/data', handle_api_data)
-    app.router.add_get('/api/admin_data', handle_admin_data)
-    app.router.add_post('/api/store', handle_update_store)
-    app.router.add_post('/api/product', handle_update_product)
-    app.router.add_post('/api/delete_product', handle_delete_product)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
-    await site.start()
-    logger.info(f"Web server started on port {WEBAPP_PORT}")
-
-    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
