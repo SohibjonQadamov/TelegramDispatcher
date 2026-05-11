@@ -37,7 +37,7 @@ if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise RuntimeError(".env ni to'ldiring")
 
 DB_PATH = Path("orders.db")
-WEBAPP_PORT = int(os.getenv("WEBAPP_PORT") or 8080)
+WEBAPP_PORT = int(os.environ.get("PORT", 8080))
 WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://d0fc-213-230-80-60.ngrok-free.app" # placeholder, user must update .env
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -733,7 +733,46 @@ async def handle_delete_product(request):
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
 
+# 1. Portni dinamik qiling (Kodingizning tepa qismida)
+WEBAPP_PORT = int(os.environ.get("PORT", 10000))
+
+# 2. Main funksiyasini mana bunga almashtiring:
 async def main():
+    init_db()
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)
+    
+    # Setup aiohttp app
+    app = web.Application()
+    app.router.add_get('/', handle_index)
+    app.router.add_get('/index1.html', handle_index)
+    app.router.add_get('/admin.html', handle_admin)
+    app.router.add_get('/api/data', handle_api_data)
+    app.router.add_get('/api/admin_data', handle_admin_data)
+    app.router.add_post('/api/store', handle_update_store)
+    app.router.add_post('/api/product', handle_update_product)
+    app.router.add_post('/api/delete_product', handle_delete_product)
+    
+    # MUHIM: Statik fayllar uchun yo'l (agar papka nomi webapp bo'lsa)
+    # App ichida statik fayllarni ko'rsatib qo'yish kerak
+    if os.path.exists("webapp"):
+        app.router.add_static('/webapp/', path='webapp', name='webapp')
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render PORT o'zgaruvchisini ishlatsin
+    site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
+    await site.start()
+    
+    logger.info(f"Web server started on port {WEBAPP_PORT}")
+
+    # Botni yurgizish (Webhook ishlatishni maslahat berardim, lekin polling bo'lsa ham port to'g'ri bo'lishi shart)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
     init_db()
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
