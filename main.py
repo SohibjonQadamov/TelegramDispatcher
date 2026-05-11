@@ -191,7 +191,7 @@ class ProductState(StatesGroup):
 # ================= UI =================
 def main_kb(uid=None):
     rows = [
-        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index1.html"))]
+        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index.html"))]
     ]
 
     # Admin tugmalari
