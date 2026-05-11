@@ -796,7 +796,7 @@ async def main():
     await site.start()
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
