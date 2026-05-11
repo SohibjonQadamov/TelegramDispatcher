@@ -741,8 +741,7 @@ async def main():
     init_db()
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-    
+
     # Setup aiohttp app
     app = web.Application()
     app.router.add_get('/', handle_index)
