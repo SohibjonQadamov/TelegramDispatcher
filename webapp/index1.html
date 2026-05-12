@@ -130,6 +130,24 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 .search-box input{border:none;outline:none;background:none;font-size:16px;font-family:var(--font);color:var(--lbl);flex:1}
 .search-box input::placeholder{color:var(--lbl3)}
 
+/* ===== SEARCH OVERLAY ===== */
+#search-ov{position:fixed;inset:0;z-index:180;background:var(--bg);display:flex;flex-direction:column;transform:translateY(12px);opacity:0;pointer-events:none;transition:opacity .22s,transform .22s cubic-bezier(.4,0,.2,1)}
+#search-ov.open{opacity:1;transform:translateY(0);pointer-events:all}
+.sr-top{display:flex;align-items:center;gap:10px;padding:calc(var(--st)+12px) 16px 10px;background:var(--bg);flex-shrink:0}
+.sr-field{flex:1;display:flex;align-items:center;gap:9px;background:var(--fill);border-radius:12px;padding:11px 14px}
+.sr-field svg{color:var(--lbl3);flex-shrink:0}
+.sr-field input{border:none;outline:none;background:none;font-size:16px;font-family:var(--font);color:var(--lbl);flex:1;min-width:0}
+.sr-field input::placeholder{color:var(--lbl3)}
+.sr-cancel{font-size:16px;font-weight:600;color:var(--acc);white-space:nowrap;background:none;border:none;cursor:pointer;font-family:var(--font);padding:4px 0;flex-shrink:0}
+.sr-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(96px + var(--sb))}
+.sr-section{padding:16px 16px 6px;font-size:13px;font-weight:700;color:var(--lbl2);text-transform:uppercase;letter-spacing:.4px}
+.sr-empty{padding:64px 20px;text-align:center}
+.sr-empty-em{font-size:52px;margin-bottom:10px}
+.sr-empty-t{font-size:17px;font-weight:600;letter-spacing:-.2px}
+.sr-empty-s{font-size:14px;color:var(--lbl2);margin-top:4px}
+.search-btn{display:flex;align-items:center;gap:9px;background:var(--fill);border-radius:12px;padding:11px 14px;margin-bottom:2px;cursor:pointer;border:none;width:100%;font-family:var(--font);text-align:left}
+.search-btn svg{color:var(--lbl3);flex-shrink:0}
+.search-btn-txt{font-size:16px;color:var(--lbl3);flex:1}
 /* ===== ALERT ===== */
 .alert-row{padding:10px 16px 0;display:flex}
 .alert-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--acc-l);border-radius:20px;font-size:13px;font-weight:600;color:var(--acc)}
@@ -509,10 +527,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
             </div>
           </button>
         </div>
-        <div class="search-box">
+        <button class="search-btn" onclick="openSearch()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="searchInp" oninput="doSearch(this.value)">
-        </div>
+          <span class="search-btn-txt" id="searchPlaceholder">Restoran yoki taom qidiring...</span>
+        </button>
       </div>
       <div class="alert-row">
         <div class="alert-pill"><div class="a-dot"></div><span id="alertTxt">Yangi chegirmalar!</span></div>
@@ -727,6 +745,24 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
     <textarea class="rat-comment" id="ratComment" rows="3" placeholder="Izoh (ixtiyoriy)..."></textarea>
     <button class="rat-send" onclick="submitRating()" id="ratSendBtn">Yuborish</button>
     <div class="rat-skip" onclick="closeRating()">O'tkazib yuborish</div>
+  </div>
+</div>
+
+<!-- SEARCH OVERLAY -->
+<div id="search-ov">
+  <div class="sr-top">
+    <div class="sr-field">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="srInp" oninput="doSearch(this.value)" autocomplete="off" autocorrect="off" spellcheck="false">
+    </div>
+    <button class="sr-cancel" onclick="closeSearch()" id="srCancel">Bekor</button>
+  </div>
+  <div class="sr-scroll" id="srResults">
+    <div class="sr-empty">
+      <div class="sr-empty-em">🔍</div>
+      <div class="sr-empty-t" id="srEmptyT">Qidiring</div>
+      <div class="sr-empty-s" id="srEmptyS">Restoran yoki taom nomini kiriting</div>
+    </div>
   </div>
 </div>
 
@@ -1233,13 +1269,46 @@ function placeOrder() {
 }
 
 // ── SEARCH ──
+function openSearch() {
+  const ov = document.getElementById('search-ov');
+  ov.classList.add('open');
+  hap.light();
+  setTimeout(() => {
+    const inp = document.getElementById('srInp');
+    inp.value = '';
+    inp.focus();
+    document.getElementById('srResults').innerHTML = `<div class="sr-empty"><div class="sr-empty-em">🔍</div><div class="sr-empty-t" id="srEmptyT">Qidiring</div><div class="sr-empty-s">Restoran yoki taom nomini kiriting</div></div>`;
+  }, 100);
+}
+
+function closeSearch() {
+  const ov = document.getElementById('search-ov');
+  ov.classList.remove('open');
+  document.getElementById('srInp').blur();
+  hap.light();
+}
+
 function doSearch(q) {
-  if (q.length < 2) { renderStores(curCat); renderPopular(); return; }
+  const res = document.getElementById('srResults');
+  if (!q || q.length < 1) {
+    res.innerHTML = `<div class="sr-empty"><div class="sr-empty-em">🔍</div><div class="sr-empty-t">Qidiring</div><div class="sr-empty-s">Restoran yoki taom nomini kiriting</div></div>`;
+    return;
+  }
   const Q = q.toLowerCase();
   const fs = stores.filter(s=>s.name.toLowerCase().includes(Q)||(s.type||'').toLowerCase().includes(Q));
   const fp = Object.values(menu).flat().filter(p=>p.name.toLowerCase().includes(Q)||(p.desc||'').toLowerCase().includes(Q));
-  document.getElementById('strList').innerHTML = fs.map((s,i)=>storeCardHTML(s,i)).join('') || '<div style="padding:20px;color:var(--lbl2);font-size:14px;white-space:nowrap">Restoran topilmadi</div>';
-  document.getElementById('popList').innerHTML = fp.map((p,i)=>piHTML(p,i)).join('') || `<div class="empty-s"><div class="empty-em">🔍</div><div class="empty-t">Topilmadi</div></div>`;
+  if (!fs.length && !fp.length) {
+    res.innerHTML = `<div class="sr-empty"><div class="sr-empty-em">😕</div><div class="sr-empty-t">Topilmadi</div><div class="sr-empty-s">"${q}" bo'yicha natija yo'q</div></div>`;
+    return;
+  }
+  let html = '';
+  if (fs.length) {
+    html += `<div class="sr-section">Restoranlar</div><div class="str-scroll" style="padding:0 16px 12px">${fs.map((s,i)=>storeCardHTML(s,i)).join('')}</div>`;
+  }
+  if (fp.length) {
+    html += `<div class="sr-section">Taomlar</div><div class="pl" style="padding:0 16px">${fp.map((p,i)=>piHTML(p,i)).join('')}</div>`;
+  }
+  res.innerHTML = html;
 }
 
 // ── ORDER HISTORY (mock) ──
