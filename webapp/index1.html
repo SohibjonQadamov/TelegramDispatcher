@@ -791,14 +791,31 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 <div id="toast" class="gone"></div>
 
 <script>
-const tg = window.Telegram.WebApp;
-tg.expand(); tg.ready();
+// Safe Telegram init — won't crash if CDN not loaded yet
+const tg = window.Telegram?.WebApp || {
+  initDataUnsafe:{}, expand:()=>{}, ready:()=>{},
+  HapticFeedback:{impactOccurred:()=>{}, notificationOccurred:()=>{}},
+  close:()=>{}
+};
+try { tg.expand(); tg.ready(); } catch(e) {}
+
+// Fallback splash dismiss — always shows app after 5s no matter what
+setTimeout(() => {
+  const s = document.getElementById('splash');
+  const a = document.getElementById('app');
+  const n = document.getElementById('mainNav');
+  if (s && s.style.display !== 'none') {
+    s.style.display = 'none';
+    if (a) { a.classList.remove('gone'); a.classList.add('show'); }
+    if (n) n.classList.add('ready');
+  }
+}, 5000);
 
 // ── HAPTIC ──
 const hap = {
-  light: ()=>tg.HapticFeedback?.impactOccurred('light'),
-  medium: ()=>tg.HapticFeedback?.impactOccurred('medium'),
-  success: ()=>tg.HapticFeedback?.notificationOccurred('success'),
+  light: ()=>{ try{tg.HapticFeedback?.impactOccurred('light')}catch(e){} },
+  medium: ()=>{ try{tg.HapticFeedback?.impactOccurred('medium')}catch(e){} },
+  success: ()=>{ try{tg.HapticFeedback?.notificationOccurred('success')}catch(e){} },
 };
 
 // ── STATE ──
@@ -968,8 +985,8 @@ function setLang(l) {
 
 // ── SPLASH / INIT ──
 window.addEventListener('DOMContentLoaded', () => {
-  applyDark();
-  applyLang();
+  try { applyDark(); } catch(e) {}
+  try { applyLang(); } catch(e) {}
   const u = tg.initDataUnsafe?.user;
   if (u) {
     const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
