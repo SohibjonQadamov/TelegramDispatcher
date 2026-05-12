@@ -67,7 +67,7 @@ def is_admin(user_id: int) -> bool:
 _TABLES_SQL = [
     # orders
     """CREATE TABLE IF NOT EXISTS orders (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         created_at TEXT, status TEXT DEFAULT 'NEW',
         full_name TEXT, phone TEXT, address TEXT,
         lat REAL, lon REAL,
@@ -91,7 +91,7 @@ _TABLES_SQL = [
     )""",
     # stores  ← CENTRAL TABLE: stores/products/orders separated
     """CREATE TABLE IF NOT EXISTS stores (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         admin_id BIGINT UNIQUE,
         name TEXT, type TEXT, emoji TEXT, bg_color TEXT,
         delivery_fee INTEGER DEFAULT 15000,
@@ -107,22 +107,22 @@ _TABLES_SQL = [
     )""",
     # products  ← SEPARATE from stores
     """CREATE TABLE IF NOT EXISTS products (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         store_id INTEGER,
         name TEXT, price INTEGER,
-        description TEXT, emoji TEXT, cat TEXT,
+        desc TEXT, emoji TEXT, cat TEXT,
         old_price INTEGER, discount_qty INTEGER, discount_end TEXT
     )""",
     # ratings
     """CREATE TABLE IF NOT EXISTS ratings (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         order_id INTEGER UNIQUE,
         user_id BIGINT, store_id INTEGER,
         stars INTEGER, comment TEXT, created_at TEXT
     )""",
     # subscriptions
     """CREATE TABLE IF NOT EXISTS subscriptions (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         store_id INTEGER UNIQUE,
         admin_id BIGINT,
         plan TEXT DEFAULT 'free',
@@ -131,7 +131,7 @@ _TABLES_SQL = [
     )""",
     # transactions
     """CREATE TABLE IF NOT EXISTS transactions (
-        id {serial} PRIMARY KEY,
+        id {id_def},
         provider TEXT, provider_tx_id TEXT UNIQUE,
         order_id INTEGER, amount INTEGER,
         state INTEGER DEFAULT 1,
@@ -154,7 +154,7 @@ def _init_db_pg():
     try:
         with conn.cursor() as cur:
             for tpl in _TABLES_SQL:
-                cur.execute(tpl.format(serial="BIGSERIAL"))
+                cur.execute(tpl.format(id_def="BIGSERIAL PRIMARY KEY"))
             # Safe column migrations for PG (IF NOT EXISTS supported in PG 9.6+)
             safe_cols = [
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id INTEGER",
@@ -163,11 +163,10 @@ def _init_db_pg():
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_status TEXT",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_tracking_url TEXT",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_type TEXT DEFAULT 'own'",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS desc TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_qty INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_end TEXT",
-                # products.desc was renamed to products.description
-                "ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT",
             ]
             for col in safe_cols:
                 try: cur.execute(col)
@@ -181,7 +180,7 @@ def _init_db_pg():
 def _init_db_sqlite():
     with sqlite3.connect(DB_PATH) as conn:
         for tpl in _TABLES_SQL:
-            conn.execute(tpl.format(serial="INTEGER AUTOINCREMENT"))
+            conn.execute(tpl.format(id_def="INTEGER PRIMARY KEY AUTOINCREMENT"))
         # Safe migrations (OperationalError if column already exists)
         safe_cols = [
             "ALTER TABLE orders ADD COLUMN store_id INTEGER",
@@ -190,10 +189,10 @@ def _init_db_sqlite():
             "ALTER TABLE orders ADD COLUMN yandex_status TEXT",
             "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
             "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
+            "ALTER TABLE products ADD COLUMN desc TEXT",
             "ALTER TABLE products ADD COLUMN old_price INTEGER",
             "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
             "ALTER TABLE products ADD COLUMN discount_end TEXT",
-            "ALTER TABLE products ADD COLUMN description TEXT",
             "ALTER TABLE stores ADD COLUMN admin_id INTEGER",
             "ALTER TABLE stores ADD COLUMN name TEXT",
             "ALTER TABLE stores ADD COLUMN type TEXT",
@@ -888,12 +887,14 @@ async def handle_api_data(request):
     for s in stores_db:
         stores.append({
             "id": s['id'],
-            "name": s['name'],
-            "emoji": s['emoji'],
-            "time": "15-30",
+            "name": s['name'] or '',
+            "emoji": s['emoji'] or '🍔',
+            "time": str(s['eta'] or 25),
             "rating": "5.0",
-            "type": s['type'],
-            "bg": s['bg_color'] or "linear-gradient(135deg, #a18cd1, #fbc2eb)"
+            "type": s['type'] or '',
+            "bg": s['bg_color'] or "linear-gradient(135deg, #a18cd1, #fbc2eb)",
+            "delivery_fee": s['delivery_fee'] or 15000,
+            "min_order": s['min_order'] or 50000,
         })
         
     menuItems = {}
@@ -904,7 +905,7 @@ async def handle_api_data(request):
             "id": p['id'],
             "name": p['name'],
             "price": p['price'],
-            "desc": p.get('description') or p.get('desc') or '',
+            "desc": p.get('desc') or '',
             "emoji": p['emoji'],
             "cat": p['cat'],
             "store_id": p['store_id'],
@@ -992,21 +993,21 @@ async def handle_update_product(request):
         desc       = (data.get('desc') or data.get('description') or '').strip()
         emoji      = (data.get('emoji') or '🍽️').strip()
         cat        = (data.get('cat') or '').strip()
-        old_price  = data.get('old_price')
-        disc_qty   = data.get('discount_qty')
-        disc_end   = data.get('discount_end')
+        old_price  = data.get('old_price') or None
+        disc_qty   = data.get('discount_qty') or None
+        disc_end   = data.get('discount_end') or None
 
         if not name:
             return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
 
         if p_id:
             db_execute(
-                "UPDATE products SET name=?, price=?, description=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? WHERE id=? AND store_id=?",
-                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, p_id, store['id'])
+                "UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, int(p_id), store['id'])
             )
         else:
             db_execute(
-                "INSERT INTO products (store_id, name, price, description, emoji, cat, old_price, discount_qty, discount_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end)
             )
         logger.info(f"Product saved: store={store['id']} name={name}")

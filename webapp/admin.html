@@ -1141,32 +1141,44 @@ function closeModal() {
 }
 
 async function saveProd() {
-  const name = document.getElementById('mName').value.trim();
-  const price = document.getElementById('mPrice').value;
-  const cat = document.getElementById('mCat').value.trim();
-  if (!name || !price || !cat) { showToast('⚠️ Nom, narx va kategoriya majburiy!'); return; }
+  const name  = document.getElementById('mName').value.trim();
+  const price = document.getElementById('mPrice').value.trim();
+  const cat   = document.getElementById('mCat').value.trim();
+  const emoji = document.getElementById('mEmoji').value.trim() || '🍽️';
+  const desc  = document.getElementById('mDesc')?.value?.trim() || '';
+
+  if (!name)  { showToast('⚠️ Mahsulot nomini kiriting!'); return; }
+  if (!price) { showToast('⚠️ Narxni kiriting!'); return; }
+  if (!cat)   { showToast('⚠️ Kategoriya kiriting!'); return; }
+  if (!ADMIN_ID) { showToast('❌ ADMIN_ID topilmadi. Botdan oching!'); return; }
 
   const btn = document.getElementById('modalSaveBtn');
   btn.disabled = true; btn.textContent = 'Saqlanmoqda...';
+  showToast('⏳ Saqlanmoqda...');
+
   try {
-    await fetch('/api/product', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        admin_id: ADMIN_ID,
-        id: document.getElementById('mProdId').value || null,
-        name, price: parseInt(price),
-        old_price: parseInt(document.getElementById('mOldPrice').value)||null,
-        discount_qty: parseInt(document.getElementById('mDiscQty').value)||null,
-        discount_end: document.getElementById('mDiscEnd').value||null,
-        cat, desc: document.getElementById('mDesc').value.trim(),
-        emoji: document.getElementById('mEmoji').value.trim(),
-      })
+    const payload = {
+      admin_id: ADMIN_ID,
+      id:       document.getElementById('mProdId').value || null,
+      name, price: parseInt(price), cat, desc, emoji,
+      old_price:    parseInt(document.getElementById('mOldPrice')?.value)||null,
+      discount_qty: parseInt(document.getElementById('mDiscQty')?.value)||null,
+      discount_end: document.getElementById('mDiscEnd')?.value || null,
+    };
+    const r = await fetch('/api/product', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
     });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text}`);
     closeModal();
-    showToast('✅ Mahsulot saqlandi!');
+    showToast('✅ "' + name + '" saqlandi!');
     await loadAdminData();
-  } catch(e) { showToast('❌ Xatolik yuz berdi'); }
-  finally {
+  } catch(e) {
+    console.error('saveProd:', e);
+    showToast('❌ ' + e.message);
+  } finally {
     btn.disabled = false;
     btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Saqlash';
   }
