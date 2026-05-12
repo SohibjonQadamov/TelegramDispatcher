@@ -481,7 +481,6 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
   box-shadow:var(--shadow-md);
 }
 #toast.gone{display:none}
-#yandex-modal.gone{display:none}
 </style>
 </head>
 <body>
@@ -707,14 +706,6 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
   </div>
 </div>
 
-<!-- YANDEX MODAL -->
-<div id="yandex-modal" class="gone" style="position:fixed;inset:0;z-index:250;display:flex;align-items:flex-end;justify-content:center">
-  <div onclick="closeYandexModal()" style="position:absolute;inset:0;background:rgba(0,0,0,0.48);backdrop-filter:blur(6px);animation:bdIn .22s ease"></div>
-  <div style="position:relative;z-index:1;background:var(--white);border-radius:26px 26px 0 0;width:100%;max-width:480px;padding:20px 20px var(--safe-b);animation:sheetUp .36s cubic-bezier(.32,.72,0,1)">
-    <div style="width:36px;height:4px;background:var(--border);border-radius:2px;margin:0 auto 16px"></div>
-    <div id="yandex-modal-body"></div>
-  </div>
-</div>
 
 <!-- TOAST -->
 <div id="toast" class="gone"></div>
@@ -1428,85 +1419,23 @@ function downloadReport() {
   setTimeout(() => showToast('✅ Hisobot tayyor! (Demo rejim)'), 1500);
 }
 
-// ── YANDEX DELIVERY (manual — admin o'zi chaqiradi) ──
+// ── YANDEX DELIVERY ──
 function yandexOrder(orderId) {
   const order = orders.find(o => o.id == orderId);
   if (!order) return;
-
-  const modal = document.getElementById('yandex-modal');
   const lat = order.lat, lon = order.lon;
-  const address = order.address || 'Manzil ko\'rsatilmagan';
-  const phone = order.phone || '—';
-  const name = order.full_name || '—';
-  const total = Number(order.total || 0).toLocaleString();
-
-  // Yandex Go deep link — manzilni destination sifatida ochadi
-  const yandexLink = lat && lon
+  const address = order.address || '';
+  const link = lat && lon
     ? `https://go.yandex/route?end-lat=${lat}&end-lon=${lon}&tariff=express`
     : 'https://taxi.yandex.uz/';
-
-  // Google Maps link
-  const mapsLink = lat && lon
-    ? `https://maps.google.com/?q=${lat},${lon}`
-    : `https://maps.google.com/?q=${encodeURIComponent(address)}`;
-
-  document.getElementById('yandex-modal-body').innerHTML = `
-    <div style="text-align:center;padding:4px 0 16px">
-      <div style="font-size:44px">🚕</div>
-      <div style="font-size:19px;font-weight:800;margin-top:6px">Yandex Go orqali yetkazish</div>
-      <div style="font-size:13px;color:var(--text3);margin-top:3px">Quyidagi ma'lumotlarni Yandex Go ga kiriting</div>
-    </div>
-
-    <div style="background:var(--bg);border-radius:16px;padding:14px 16px;display:flex;flex-direction:column;gap:11px;margin-bottom:14px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:13px;color:var(--text3);font-weight:600">BUYURTMA</span>
-        <span style="font-weight:800;color:var(--red)">#${order.id} · ${total} so'm</span>
-      </div>
-      <div style="height:0.5px;background:var(--border)"></div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-        <span style="font-size:13px;color:var(--text2);flex-shrink:0">👤 Mijoz</span>
-        <span style="font-weight:700;text-align:right">${name}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:13px;color:var(--text2);flex-shrink:0">📞 Telefon</span>
-        <a href="tel:${phone}" style="font-weight:700;color:var(--blue);text-decoration:none">${phone}</a>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-        <span style="font-size:13px;color:var(--text2);flex-shrink:0">📍 Manzil</span>
-        <span style="font-weight:600;font-size:13px;text-align:right;max-width:200px">${address}</span>
-      </div>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <a href="${yandexLink}" target="_blank" onclick="closeYandexModal()"
-         style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:15px;
-                background:#FC3F1D;color:#fff;border:none;border-radius:14px;
-                font-size:16px;font-weight:800;cursor:pointer;text-decoration:none;box-sizing:border-box">
-        🚕 Yandex Go ilovasini ochish
-      </a>
-      <a href="${mapsLink}" target="_blank" onclick="closeYandexModal()"
-         style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px;
-                background:var(--blue-l);color:var(--blue);border:none;border-radius:14px;
-                font-size:14px;font-weight:700;cursor:pointer;text-decoration:none;box-sizing:border-box">
-        🗺️ Google Maps da ko'rish
-      </a>
-      <button onclick="copyAddress('${address.replace(/'/g,"\\'")}');closeYandexModal()"
-        style="width:100%;padding:12px;background:var(--bg);color:var(--text2);border:1px solid var(--border);
-               border-radius:14px;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">
-        📋 Manzilni nusxalash
-      </button>
-    </div>
-    <div style="height:4px"></div>
-  `;
-  modal.classList.remove('gone');
+  window.open(link, '_blank');
 }
+
+function openYandexStatus(orderId) { yandexOrder(orderId); }
+function closeYandexModal() {}
 
 function copyAddress(address) {
   navigator.clipboard?.writeText(address).then(() => showToast('📋 Manzil nusxalandi!')).catch(() => showToast('Manzil: ' + address));
-}
-
-function closeYandexModal() {
-  document.getElementById('yandex-modal').classList.add('gone');
 }
 
 // ── SETTINGS ──
