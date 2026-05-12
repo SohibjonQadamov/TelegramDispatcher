@@ -834,31 +834,48 @@ async def handle_admin_data(request):
     return web.json_response({"store": store, "products": products})
 
 async def handle_update_store(request):
-    data = await request.json()
-    admin_id = data.get('admin_id')
-    name = data.get('name')
-    type_ = data.get('type')
-    emoji = data.get('emoji')
-    delivery_fee = data.get('delivery_fee', 15000)
-    eta = data.get('eta', 25)
-    radius = data.get('radius', 5)
-    min_order = data.get('min_order', 50000)
-    hours_weekday = data.get('hours_weekday', '09:00-22:00')
-    hours_weekend = data.get('hours_weekend', '10:00-23:00')
-    bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error(f"handle_update_store: bad JSON: {e}")
+        return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
-    if store:
-        db_execute(
-            "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=? WHERE admin_id=?",
-            (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, admin_id)
-        )
-    else:
-        db_execute(
-            "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend)
-        )
-    return web.json_response({"status": "ok"})
+    try:
+        admin_id = data.get('admin_id')
+        if not admin_id or int(admin_id) == 0:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        admin_id = int(admin_id)
+
+        name          = (data.get('name') or '').strip()
+        type_         = (data.get('type') or '').strip()
+        emoji         = (data.get('emoji') or '🍔').strip() or '🍔'
+        delivery_fee  = int(data.get('delivery_fee') or 15000)
+        eta           = int(data.get('eta') or 25)
+        radius        = float(data.get('radius') or 5)
+        min_order     = int(data.get('min_order') or 50000)
+        hours_weekday = str(data.get('hours_weekday') or '09:00-22:00')
+        hours_weekend = str(data.get('hours_weekend') or '10:00-23:00')
+        bg            = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
+
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+        if store:
+            db_execute(
+                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=? WHERE admin_id=?",
+                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, admin_id)
+            )
+            logger.info(f"Store updated: admin_id={admin_id} name={name}")
+        else:
+            db_execute(
+                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend)
+            )
+            logger.info(f"Store created: admin_id={admin_id} name={name}")
+
+        return web.json_response({"status": "ok", "name": name})
+
+    except Exception as e:
+        logger.exception(f"handle_update_store error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 async def handle_update_product(request):
     data = await request.json()
