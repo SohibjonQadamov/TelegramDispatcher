@@ -712,8 +712,9 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 <div id="toast" class="gone"></div>
 
 <script>
-const tg = window.Telegram.WebApp;
-tg.expand(); tg.ready();
+// Safe Telegram init — won't crash if window.Telegram isn't loaded yet
+const tg = window.Telegram?.WebApp || { initDataUnsafe:{}, expand:()=>{}, ready:()=>{}, HapticFeedback:{impactOccurred:()=>{}} };
+try { tg.expand(); tg.ready(); } catch(e) {}
 
 // Telegram user ID — fallback to localStorage (set by index1.html onboarding)
 const ADMIN_ID = tg.initDataUnsafe?.user?.id || parseInt(localStorage.getItem('user_id') || '0');
@@ -721,6 +722,14 @@ let storeData = null, products = [], orders = [], stats = null;
 let curPage = 'dash', orderFilter = 'all', prodFilter = 'all';
 let weeklyData = [], anPeriod = 'today';
 let isStoreOpen = true;
+
+// Global error catcher — show any JS crash visually
+window.addEventListener('error', e => {
+  const el = document.getElementById('splash');
+  if (el && el.style.display !== 'none') {
+    el.innerHTML += `<div style="color:#ff6b6b;font-size:12px;padding:8px 16px;text-align:center;max-width:320px">❌ JS: ${e.message}</div>`;
+  }
+});
 
 const STATUS = {
   NEW:        {label:'Yangi',       cls:'s-new',      badge:'badge-red',    icon:'🆕'},
@@ -739,25 +748,36 @@ const NEXT_ACTION = {
 };
 
 // ── SPLASH / INIT ──
+function showApp() {
+  const splash = document.getElementById('splash');
+  const app = document.getElementById('app');
+  splash.classList.add('out');
+  setTimeout(() => {
+    splash.style.display = 'none';
+    app.classList.remove('gone');
+    requestAnimationFrame(() => requestAnimationFrame(() => app.classList.add('show')));
+    loadAll();
+  }, 380);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   const u = tg.initDataUnsafe?.user;
   if (u) {
-    document.getElementById('tbAv').textContent = (u.first_name||'A')[0].toUpperCase();
-    document.getElementById('wbName').textContent = u.first_name || 'Admin';
+    const av = document.getElementById('tbAv');
+    const nm = document.getElementById('wbName');
+    if (av) av.textContent = (u.first_name||'A')[0].toUpperCase();
+    if (nm) nm.textContent = u.first_name || 'Admin';
   }
-  setTimeout(() => {
-    document.getElementById('splash').classList.add('out');
-    setTimeout(() => {
-      document.getElementById('splash').style.display = 'none';
-      const app = document.getElementById('app');
-      app.classList.remove('gone');
-      requestAnimationFrame(() => requestAnimationFrame(() => app.classList.add('show')));
-      loadAll();
-    }, 440);
-  }, 1800);
+  // Splash 800ms — enough to see, fast enough to not annoy
+  setTimeout(showApp, 800);
 });
 
 async function loadAll() {
+  if (!ADMIN_ID) {
+    showNoStoreSetup();
+    showToast('⚠️ Telegram ID aniqlanmadi. Botdan oching.');
+    return;
+  }
   await Promise.all([loadAdminData(), loadStats(), loadOrders(), loadSubscription(), loadRatings(), loadBranding()]);
 }
 
