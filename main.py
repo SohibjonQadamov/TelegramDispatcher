@@ -281,7 +281,7 @@ def main_kb(uid=None):
     ]
 
     # Admin tugmalari
-    if uid and is_admin(uid):
+    if uid and (is_admin(uid) or db_fetchone("SELECT id FROM stores WHERE admin_id=?", (uid,))):
         rows.append([KeyboardButton(text="⚙️ Boshqaruv", web_app=WebAppInfo(url=WEBAPP_URL + "/admin.html"))])
     else:
         # Oddiy foydalanuvchilar uchun kuryerlik

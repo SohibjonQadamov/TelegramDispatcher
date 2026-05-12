@@ -460,61 +460,41 @@ function setupSwipe() {
 // ── LOGIN ──
 async function doLogin() {
   const u = tg.initDataUnsafe?.user;
-  if (!u) {
-    hap.error();
-    alert('Telegram ma\'lumotlari topilmadi. Iltimos, botdan qayta oching.');
-    return;
-  }
-
   const btn = document.getElementById('enterBtn');
-  const btnTxt = document.getElementById('enterBtnTxt');
   btn.disabled = true;
-  btnTxt.textContent = '';
   btn.innerHTML = '<div class="spinner"></div>';
 
   try {
-    const resp = await fetch('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: u.id,
-        first_name: u.first_name || '',
-        last_name: u.last_name || '',
-        username: u.username || '',
-        language_code: u.language_code || 'uz',
-        photo_url: u.photo_url || '',
-      })
-    });
+    if (u && u.id) {
+      await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: u.id,
+          first_name: u.first_name || '',
+          last_name: u.last_name || '',
+          username: u.username || '',
+          language_code: u.language_code || 'uz',
+          photo_url: u.photo_url || '',
+        })
+      });
+      localStorage.setItem('user_id', String(u.id));
+    }
+  } catch(e) {}
 
-    localStorage.setItem('registered', '1');
-    localStorage.setItem('user_id', String(u.id));
-
-    hap.success();
-    showSuccess(u);
-  } catch(e) {
-    // Offline bo'lsa ham local saqlaymiz
-    localStorage.setItem('registered', '1');
-    localStorage.setItem('user_id', String(u.id));
-    hap.success();
-    showSuccess(u);
-  }
+  localStorage.setItem('registered', '1');
+  hap.success();
+  showSuccess(u || { first_name: 'do\'st' });
 }
 
 function showSuccess(u) {
-  const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
   document.getElementById('succH').textContent = `Xush kelibsiz, ${u.first_name || 'do\'st'}! 👋`;
-  const succ = document.getElementById('successScreen');
-  succ.classList.add('show');
-  setTimeout(() => goToApp(), 2200);
+  document.getElementById('successScreen').classList.add('show');
+  setTimeout(() => goToApp(), 1800);
 }
 
 function goToApp() {
-  // Asosiy ilovaga o'tamiz
-  tg.sendData(JSON.stringify({ action: 'registered' }));
-  // Agar sendData ishlamasa (webview emas) — to'g'ridan-to'g'ri yubor
-  setTimeout(() => {
-    window.location.href = '/index1.html';
-  }, 300);
+  window.location.href = '/index1.html';
 }
 </script>
 </body>
