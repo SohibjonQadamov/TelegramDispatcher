@@ -155,7 +155,7 @@ def _init_db_pg():
         with conn.cursor() as cur:
             for tpl in _TABLES_SQL:
                 cur.execute(tpl.format(id_def="BIGSERIAL PRIMARY KEY"))
-            # Safe column migrations for PG (IF NOT EXISTS supported in PG 9.6+)
+            # Safe column migrations for PG (IF NOT EXISTS supported PG 9.6+)
             safe_cols = [
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS target_chat_id BIGINT",
@@ -163,7 +163,36 @@ def _init_db_pg():
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_status TEXT",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_tracking_url TEXT",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_type TEXT DEFAULT 'own'",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS group_message_id INTEGER",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS language_code TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded INTEGER DEFAULT 0",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS admin_id BIGINT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS name TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS type TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS emoji TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS bg_color TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 15000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS eta INTEGER DEFAULT 25",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS radius REAL DEFAULT 5",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS min_order INTEGER DEFAULT 50000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS hours_weekday TEXT DEFAULT '09:00-22:00'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS hours_weekend TEXT DEFAULT '10:00-23:00'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_open INTEGER DEFAULT 1",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS accent_color TEXT DEFAULT '#FF6B35'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS cover_url TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS description TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS address TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS desc TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS emoji TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS cat TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_qty INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_end TEXT",
@@ -181,18 +210,25 @@ def _init_db_sqlite():
     with sqlite3.connect(DB_PATH) as conn:
         for tpl in _TABLES_SQL:
             conn.execute(tpl.format(id_def="INTEGER PRIMARY KEY AUTOINCREMENT"))
-        # Safe migrations (OperationalError if column already exists)
+        # COMPREHENSIVE migrations — every possible column for every table.
+        # try/except silently skips columns that already exist.
         safe_cols = [
+            # orders
             "ALTER TABLE orders ADD COLUMN store_id INTEGER",
             "ALTER TABLE orders ADD COLUMN target_chat_id INTEGER",
             "ALTER TABLE orders ADD COLUMN yandex_claim_id TEXT",
             "ALTER TABLE orders ADD COLUMN yandex_status TEXT",
             "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
             "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
-            "ALTER TABLE products ADD COLUMN desc TEXT",
-            "ALTER TABLE products ADD COLUMN old_price INTEGER",
-            "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
-            "ALTER TABLE products ADD COLUMN discount_end TEXT",
+            "ALTER TABLE orders ADD COLUMN group_message_id INTEGER",
+            # users
+            "ALTER TABLE users ADD COLUMN first_name TEXT",
+            "ALTER TABLE users ADD COLUMN last_name TEXT",
+            "ALTER TABLE users ADD COLUMN username TEXT",
+            "ALTER TABLE users ADD COLUMN language_code TEXT",
+            "ALTER TABLE users ADD COLUMN photo_url TEXT",
+            "ALTER TABLE users ADD COLUMN onboarded INTEGER DEFAULT 0",
+            # stores — all columns
             "ALTER TABLE stores ADD COLUMN admin_id INTEGER",
             "ALTER TABLE stores ADD COLUMN name TEXT",
             "ALTER TABLE stores ADD COLUMN type TEXT",
@@ -210,6 +246,16 @@ def _init_db_sqlite():
             "ALTER TABLE stores ADD COLUMN description TEXT",
             "ALTER TABLE stores ADD COLUMN phone TEXT",
             "ALTER TABLE stores ADD COLUMN address TEXT",
+            # products — ALL columns
+            "ALTER TABLE products ADD COLUMN store_id INTEGER",
+            "ALTER TABLE products ADD COLUMN name TEXT",
+            "ALTER TABLE products ADD COLUMN price INTEGER",
+            "ALTER TABLE products ADD COLUMN desc TEXT",
+            "ALTER TABLE products ADD COLUMN emoji TEXT",
+            "ALTER TABLE products ADD COLUMN cat TEXT",
+            "ALTER TABLE products ADD COLUMN old_price INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_end TEXT",
         ]
         for col in safe_cols:
             try: conn.execute(col)
