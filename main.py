@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import aiohttp
 from aiohttp import web
 from aiogram.types import WebAppInfo
 from aiogram import Bot, Dispatcher, F, Router
@@ -32,6 +35,11 @@ load_dotenv()
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 GROUP_CHAT_ID = int((os.getenv("GROUP_CHAT_ID") or "0").strip() or 0)
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "").split(",") if x.strip()]
+PAYME_KEY = os.getenv("PAYME_KEY", "")
+CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID", "")
+CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY", "")
+YANDEX_DELIVERY_TOKEN = os.getenv("YANDEX_DELIVERY_TOKEN", "")
+YANDEX_DELIVERY_URL = "https://b2b.taxi.yandex.net/b2b/cargo/integration/v2"
 
 if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise RuntimeError(".env ni to'ldiring")
@@ -66,16 +74,38 @@ def init_db():
             accepted_at TEXT, closed_at TEXT,
             group_message_id INTEGER
         )""")
-        try:
-            conn.execute("ALTER TABLE orders ADD COLUMN store_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
+        for col in [
+            "ALTER TABLE orders ADD COLUMN store_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN target_chat_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN yandex_claim_id TEXT",
+            "ALTER TABLE orders ADD COLUMN yandex_status TEXT",
+            "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
+            "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
+        ]:
+            try: conn.execute(col)
+            except sqlite3.OperationalError: pass
 
         conn.execute("""CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             role TEXT DEFAULT 'user',
-            registered_at TEXT
+            registered_at TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            username TEXT,
+            language_code TEXT,
+            photo_url TEXT,
+            onboarded INTEGER DEFAULT 0
         )""")
+        for col in [
+            "ALTER TABLE users ADD COLUMN first_name TEXT",
+            "ALTER TABLE users ADD COLUMN last_name TEXT",
+            "ALTER TABLE users ADD COLUMN username TEXT",
+            "ALTER TABLE users ADD COLUMN language_code TEXT",
+            "ALTER TABLE users ADD COLUMN photo_url TEXT",
+            "ALTER TABLE users ADD COLUMN onboarded INTEGER DEFAULT 0",
+        ]:
+            try: conn.execute(col)
+            except sqlite3.OperationalError: pass
 
         conn.execute("""CREATE TABLE IF NOT EXISTS stores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,13 +121,69 @@ def init_db():
         )""")
         
         # Add new columns to existing products table if they don't exist
-        try:
-            conn.execute("ALTER TABLE products ADD COLUMN old_price INTEGER")
-            conn.execute("ALTER TABLE products ADD COLUMN discount_qty INTEGER")
-            conn.execute("ALTER TABLE products ADD COLUMN discount_end TEXT")
-        except sqlite3.OperationalError:
-            pass
-            
+        for col in [
+            "ALTER TABLE products ADD COLUMN old_price INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_end TEXT",
+        ]:
+            try: conn.execute(col)
+            except sqlite3.OperationalError: pass
+
+        # Add delivery/settings columns to stores
+        for col in [
+            "ALTER TABLE stores ADD COLUMN delivery_fee INTEGER DEFAULT 15000",
+            "ALTER TABLE stores ADD COLUMN eta INTEGER DEFAULT 25",
+            "ALTER TABLE stores ADD COLUMN radius REAL DEFAULT 5",
+            "ALTER TABLE stores ADD COLUMN min_order INTEGER DEFAULT 50000",
+            "ALTER TABLE stores ADD COLUMN hours_weekday TEXT DEFAULT '09:00-22:00'",
+            "ALTER TABLE stores ADD COLUMN hours_weekend TEXT DEFAULT '10:00-23:00'",
+            "ALTER TABLE stores ADD COLUMN is_open INTEGER DEFAULT 1",
+            "ALTER TABLE stores ADD COLUMN accent_color TEXT DEFAULT '#FF6B35'",
+            "ALTER TABLE stores ADD COLUMN cover_url TEXT",
+            "ALTER TABLE stores ADD COLUMN description TEXT",
+            "ALTER TABLE stores ADD COLUMN phone TEXT",
+            "ALTER TABLE stores ADD COLUMN address TEXT",
+        ]:
+            try: conn.execute(col)
+            except sqlite3.OperationalError: pass
+
+        # Ratings
+        conn.execute("""CREATE TABLE IF NOT EXISTS ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER UNIQUE,
+            user_id INTEGER,
+            store_id INTEGER,
+            stars INTEGER,
+            comment TEXT,
+            created_at TEXT
+        )""")
+
+        # Subscriptions
+        conn.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id INTEGER UNIQUE,
+            admin_id INTEGER,
+            plan TEXT DEFAULT 'free',
+            orders_this_month INTEGER DEFAULT 0,
+            billing_month TEXT,
+            next_billing TEXT,
+            created_at TEXT
+        )""")
+
+        # Payment transactions
+        conn.execute("""CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT,
+            provider_tx_id TEXT UNIQUE,
+            order_id INTEGER,
+            amount INTEGER,
+            state INTEGER DEFAULT 1,
+            created_at TEXT,
+            performed_at TEXT,
+            cancelled_at TEXT,
+            reason INTEGER
+        )""")
+
         conn.commit()
 
 
@@ -120,11 +206,11 @@ def db_execute(sql, params=()):
         conn.commit()
 
 
-def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None):
+def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None, target_chat_id=None):
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id)
+            "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -191,7 +277,7 @@ class ProductState(StatesGroup):
 # ================= UI =================
 def main_kb(uid=None):
     rows = [
-        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index.html"))]
+        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index1.html"))]
     ]
 
     # Admin tugmalari
@@ -299,7 +385,32 @@ async def leave_courier(msg: Message):
 @router.message(F.web_app_data)
 async def webapp_handler(msg: Message, state: FSMContext):
     if not msg.from_user: return
-    data = json.loads(msg.web_app_data.data)
+    try:
+        data = json.loads(msg.web_app_data.data)
+    except Exception:
+        return
+
+    action = data.get("action")
+
+    # Onboarding tugadi — foydalanuvchini ro'yxatdan o'tkazamiz
+    if action == "registered":
+        uid = msg.from_user.id
+        db_execute(
+            """INSERT INTO users (user_id, role, registered_at, first_name, onboarded)
+               VALUES (?, 'user', ?, ?, 1)
+               ON CONFLICT(user_id) DO UPDATE SET onboarded=1""",
+            (uid, now_iso(), msg.from_user.first_name or '')
+        )
+        name = msg.from_user.first_name or "do'st"
+        await msg.answer(
+            f"✅ <b>Xush kelibsiz, {name}!</b>\n\n"
+            f"Profil muvaffaqiyatli yaratildi. Endi buyurtma berishingiz mumkin! 🍔",
+            reply_markup=main_kb(uid),
+            parse_mode="HTML"
+        )
+        return
+
+    # Oddiy buyurtma
     items = data.get("items", "")
     total = data.get("total", 0)
     store_id = data.get("store_id")
@@ -316,7 +427,37 @@ async def webapp_handler(msg: Message, state: FSMContext):
 @router.message(CommandStart())
 async def start(msg: Message, state: FSMContext):
     await state.clear()
-    await msg.answer("🍔 Fast Food", reply_markup=main_kb(msg.from_user.id if msg.from_user else None))
+    if not msg.from_user:
+        await msg.answer("🍔 Fast Food", reply_markup=main_kb())
+        return
+
+    uid = msg.from_user.id
+    user = db_fetchone("SELECT * FROM users WHERE user_id=?", (uid,))
+
+    if not user or not user.get('onboarded'):
+        # Yangi foydalanuvchi — onboarding yuborish
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🚀 Boshlash",
+                web_app=WebAppInfo(url=WEBAPP_URL + "/onboarding.html")
+            )
+        ]])
+        name = msg.from_user.first_name or "do'st"
+        await msg.answer(
+            f"👋 Salom, <b>{name}</b>!\n\n"
+            f"🍔 <b>FoodBot</b> ga xush kelibsiz!\n\n"
+            f"Telegram orqali ovqat buyurtma qiling, restoran oching, yetkazib berish — barchasi bir joyda.\n\n"
+            f"⬇️ Boshlash uchun tugmani bosing:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    else:
+        # Qaytib kelgan foydalanuvchi
+        await msg.answer(
+            f"👋 Xush kelibsiz, <b>{msg.from_user.first_name}</b>!",
+            reply_markup=main_kb(uid),
+            parse_mode="HTML"
+        )
 
 
 @router.message(F.text == "❌ Bekor qilish")
@@ -428,15 +569,16 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Ism va manzil to'ldirilishi shart", show_alert=True); return
 
     try:
-        oid = create_order(fn, ph, ad, lat, lon, items, total, cb.from_user.id, cb.from_user.full_name, store_id)
-        order = get_order(oid)
-        txt = fmt_order(order)
-        
+        # Qaysi chatga yuborish kerakligini aniqlaymiz
         target_chat = GROUP_CHAT_ID
         if store_id:
             store = db_fetchone("SELECT admin_id FROM stores WHERE id=?", (store_id,))
             if store and store['admin_id']:
                 target_chat = store['admin_id']
+
+        oid = create_order(fn, ph, ad, lat, lon, items, total, cb.from_user.id, cb.from_user.full_name, store_id, target_chat)
+        order = get_order(oid)
+        txt = fmt_order(order)
 
         if lat and lon:
             loc_msg = await cb.bot.send_location(target_chat, lat, lon)
@@ -490,9 +632,10 @@ async def accept(cb: CallbackQuery):
     await cb.answer("✅ Qabul qilindi")
 
     mid = order.get('group_message_id')
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     if mid:
         try:
-            await cb.bot.edit_message_text(GROUP_CHAT_ID, int(mid), text=fmt_order(order), reply_markup=None,
+            await cb.bot.edit_message_text(chat_id, int(mid), text=fmt_order(order), reply_markup=None,
                                            parse_mode="HTML")
         except:
             pass
@@ -513,9 +656,10 @@ async def done(cb: CallbackQuery):
     close_order(oid, "DELIVERED")
     order = get_order(oid) or order
     await cb.answer("✅ Yetkazildi")
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     mid = order.get('group_message_id')
     if mid:
-        try: await cb.bot.edit_message_text(GROUP_CHAT_ID, int(mid), text=fmt_order(order), reply_markup=None, parse_mode="HTML")
+        try: await cb.bot.edit_message_text(chat_id, int(mid), text=fmt_order(order), reply_markup=None, parse_mode="HTML")
         except: pass
     try: await cb.message.delete()
     except: pass
@@ -532,15 +676,16 @@ async def cancel(cb: CallbackQuery):
         await cb.answer("Sizniki emas!"); return
     reset_order(oid)
     order = get_order(oid)
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     await cb.answer("❌ Bekor qilindi")
     try:
         txt = fmt_order(order)
         if order.get('lat') and order.get('lon'):
-            loc_msg = await cb.bot.send_location(GROUP_CHAT_ID, order['lat'], order['lon'])
-            sent = await cb.bot.send_message(GROUP_CHAT_ID, txt, reply_to_message_id=loc_msg.message_id,
+            loc_msg = await cb.bot.send_location(chat_id, order['lat'], order['lon'])
+            sent = await cb.bot.send_message(chat_id, txt, reply_to_message_id=loc_msg.message_id,
                                              reply_markup=group_accept_kb(oid), parse_mode="HTML")
         else:
-            sent = await cb.bot.send_message(GROUP_CHAT_ID, txt, reply_markup=group_accept_kb(oid), parse_mode="HTML")
+            sent = await cb.bot.send_message(chat_id, txt, reply_markup=group_accept_kb(oid), parse_mode="HTML")
         set_group_message_id(oid, sent.message_id)
     except: pass
     try: await cb.message.delete()
@@ -689,13 +834,25 @@ async def handle_update_store(request):
     name = data.get('name')
     type_ = data.get('type')
     emoji = data.get('emoji')
+    delivery_fee = data.get('delivery_fee', 15000)
+    eta = data.get('eta', 25)
+    radius = data.get('radius', 5)
+    min_order = data.get('min_order', 50000)
+    hours_weekday = data.get('hours_weekday', '09:00-22:00')
+    hours_weekend = data.get('hours_weekend', '10:00-23:00')
     bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
-    
+
     store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
     if store:
-        db_execute("UPDATE stores SET name=?, type=?, emoji=? WHERE admin_id=?", (name, type_, emoji, admin_id))
+        db_execute(
+            "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=? WHERE admin_id=?",
+            (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, admin_id)
+        )
     else:
-        db_execute("INSERT INTO stores (admin_id, name, type, emoji, bg_color) VALUES (?, ?, ?, ?, ?)", (admin_id, name, type_, emoji, bg))
+        db_execute(
+            "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend)
+        )
     return web.json_response({"status": "ok"})
 
 async def handle_update_product(request):
@@ -733,6 +890,714 @@ async def handle_delete_product(request):
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
 
+
+async def handle_orders(request):
+    """Buyurtmalar ro'yxati — admin paneli uchun."""
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    if store:
+        orders = db_fetchall(
+            "SELECT * FROM orders WHERE store_id=? ORDER BY created_at DESC LIMIT 100",
+            (store['id'],)
+        )
+    elif int(admin_id) in ADMIN_IDS:
+        orders = db_fetchall("SELECT * FROM orders ORDER BY created_at DESC LIMIT 100")
+    else:
+        orders = []
+
+    return web.json_response({"orders": orders})
+
+
+async def handle_order_status(request):
+    data = await request.json()
+    order_id = data.get('order_id')
+    status = data.get('status')
+    allowed = {'NEW', 'IN_PROGRESS', 'READY', 'IN_DELIVERY', 'DELIVERED', 'CANCELLED'}
+    if status not in allowed:
+        return web.json_response({"error": "invalid status"}, status=400)
+    if status == 'DELIVERED':
+        db_execute("UPDATE orders SET status=?, closed_at=? WHERE id=?", (status, now_iso(), order_id))
+    else:
+        db_execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    return web.json_response({"status": "ok"})
+
+
+# ─── REGISTER ───
+async def handle_register(request):
+    data = await request.json()
+    uid = data.get('user_id')
+    if not uid:
+        return web.json_response({"error": "user_id required"}, status=400)
+    db_execute(
+        """INSERT INTO users (user_id, role, registered_at, first_name, last_name, username, language_code, photo_url, onboarded)
+           VALUES (?, 'user', ?, ?, ?, ?, ?, ?, 1)
+           ON CONFLICT(user_id) DO UPDATE SET
+             first_name=excluded.first_name,
+             last_name=excluded.last_name,
+             username=excluded.username,
+             language_code=excluded.language_code,
+             photo_url=excluded.photo_url,
+             onboarded=1""",
+        (uid, now_iso(),
+         data.get('first_name', ''), data.get('last_name', ''),
+         data.get('username', ''), data.get('language_code', 'uz'),
+         data.get('photo_url', ''))
+    )
+    return web.json_response({"status": "ok"})
+
+
+# ─── BRANDING ───
+async def handle_branding(request):
+    store_id = request.query.get("store_id")
+    admin_id = request.query.get("admin_id")
+    if store_id:
+        store = db_fetchone("SELECT * FROM stores WHERE id=?", (store_id,))
+    elif admin_id:
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    else:
+        return web.json_response({"error": "store_id or admin_id required"}, status=400)
+    if not store:
+        return web.json_response({"accent_color": "#FF6B35", "cover_url": None, "description": None, "phone": None, "address": None})
+    return web.json_response({
+        "accent_color": store.get("accent_color") or "#FF6B35",
+        "cover_url": store.get("cover_url"),
+        "description": store.get("description"),
+        "phone": store.get("phone"),
+        "address": store.get("address"),
+    })
+
+
+async def handle_update_branding(request):
+    data = await request.json()
+    admin_id = data.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+    fields = {k: data[k] for k in ("accent_color", "cover_url", "description", "phone", "address") if k in data}
+    if not fields:
+        return web.json_response({"status": "ok"})
+    set_clause = ", ".join(f"{k}=?" for k in fields)
+    db_execute(f"UPDATE stores SET {set_clause} WHERE admin_id=?", (*fields.values(), admin_id))
+    return web.json_response({"status": "ok"})
+
+
+# ─── ORDER TRACKING ───
+async def handle_order_track(request):
+    order_id = request.query.get("order_id")
+    user_id = request.query.get("user_id")
+    if not order_id:
+        return web.json_response({"error": "order_id required"}, status=400)
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,))
+    if not order:
+        return web.json_response({"error": "not found"}, status=404)
+    # Only allow the order creator or admins to track
+    if user_id and int(user_id) != order.get("created_by_id", 0) and int(user_id) not in ADMIN_IDS:
+        return web.json_response({"error": "forbidden"}, status=403)
+    status = order.get("status", "NEW")
+    steps = ["NEW", "IN_PROGRESS", "READY", "IN_DELIVERY", "DELIVERED"]
+    step_idx = steps.index(status) if status in steps else 0
+    return web.json_response({
+        "order_id": order["id"],
+        "status": status,
+        "step": step_idx,
+        "total_steps": len(steps),
+        "created_at": order.get("created_at"),
+        "accepted_at": order.get("accepted_at"),
+        "closed_at": order.get("closed_at"),
+        "courier": order.get("accepted_by_name"),
+    })
+
+
+# ─── RATINGS ───
+async def handle_submit_rating(request):
+    data = await request.json()
+    order_id = data.get("order_id")
+    user_id = data.get("user_id")
+    stars = data.get("stars")
+    comment = data.get("comment", "")
+    if not all([order_id, user_id, stars]):
+        return web.json_response({"error": "order_id, user_id, stars required"}, status=400)
+    if not (1 <= int(stars) <= 5):
+        return web.json_response({"error": "stars must be 1-5"}, status=400)
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,))
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+    try:
+        db_execute(
+            "INSERT INTO ratings (order_id, user_id, store_id, stars, comment, created_at) VALUES (?,?,?,?,?,?)",
+            (order_id, user_id, order.get("store_id"), stars, comment, now_iso())
+        )
+    except sqlite3.IntegrityError:
+        db_execute(
+            "UPDATE ratings SET stars=?, comment=?, created_at=? WHERE order_id=?",
+            (stars, comment, now_iso(), order_id)
+        )
+    return web.json_response({"status": "ok"})
+
+
+async def handle_ratings(request):
+    store_id = request.query.get("store_id")
+    admin_id = request.query.get("admin_id")
+    if admin_id:
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        store_id = store["id"] if store else None
+    if not store_id:
+        return web.json_response({"ratings": [], "avg": 0})
+    rows = db_fetchall("SELECT * FROM ratings WHERE store_id=? ORDER BY created_at DESC LIMIT 50", (store_id,))
+    avg = sum(r["stars"] for r in rows) / len(rows) if rows else 0
+    return web.json_response({"ratings": rows, "avg": round(avg, 1), "count": len(rows)})
+
+
+# ─── SUBSCRIPTION ───
+def _get_or_create_subscription(store_id, admin_id):
+    sub = db_fetchone("SELECT * FROM subscriptions WHERE store_id=?", (store_id,))
+    if not sub:
+        month = date.today().strftime("%Y-%m")
+        db_execute(
+            "INSERT INTO subscriptions (store_id, admin_id, plan, orders_this_month, billing_month, created_at) VALUES (?,?,?,?,?,?)",
+            (store_id, admin_id, "free", 0, month, now_iso())
+        )
+        sub = db_fetchone("SELECT * FROM subscriptions WHERE store_id=?", (store_id,))
+    # Reset monthly counter if new month
+    current_month = date.today().strftime("%Y-%m")
+    if sub and sub.get("billing_month") != current_month:
+        db_execute("UPDATE subscriptions SET orders_this_month=0, billing_month=? WHERE store_id=?", (current_month, store_id))
+        sub["orders_this_month"] = 0
+        sub["billing_month"] = current_month
+    return sub
+
+
+async def handle_subscription(request):
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"plan": "free", "orders_this_month": 0, "limit": 50, "next_billing": None})
+    sub = _get_or_create_subscription(store["id"], int(admin_id))
+    limits = {"free": 50, "pro": 999999, "business": 999999}
+    plan = sub.get("plan", "free")
+    return web.json_response({
+        "plan": plan,
+        "orders_this_month": sub.get("orders_this_month", 0),
+        "limit": limits.get(plan, 50),
+        "next_billing": sub.get("next_billing"),
+    })
+
+
+async def handle_upgrade_subscription(request):
+    data = await request.json()
+    admin_id = data.get("admin_id")
+    plan = data.get("plan")
+    if plan not in ("free", "pro", "business"):
+        return web.json_response({"error": "invalid plan"}, status=400)
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"error": "store not found"}, status=404)
+    next_bill = (date.today() + timedelta(days=30)).isoformat()
+    db_execute(
+        "UPDATE subscriptions SET plan=?, next_billing=? WHERE store_id=?",
+        (plan, next_bill, store["id"])
+    )
+    return web.json_response({"status": "ok", "plan": plan})
+
+
+# ─── PAYME WEBHOOK ───
+_PAYME_STATE_CREATED = 1
+_PAYME_STATE_DONE = 2
+_PAYME_STATE_CANCELLED = -1
+_PAYME_STATE_CANCELLED_AFTER_DONE = -2
+
+
+def _payme_error(code, msg, data=None):
+    return web.json_response({"error": {"code": code, "message": {"uz": msg, "ru": msg, "en": msg}, "data": data}})
+
+
+async def handle_payme(request):
+    auth = request.headers.get("Authorization", "")
+    if PAYME_KEY and auth != f"Basic {PAYME_KEY}":
+        return web.json_response({"error": {"code": -32504, "message": {"uz": "Ruxsat yo'q"}}})
+    body = await request.json()
+    method = body.get("method")
+    params = body.get("params", {})
+    rid = body.get("id", 1)
+
+    def ok(result):
+        return web.json_response({"id": rid, "result": result})
+
+    if method == "CheckPerformTransaction":
+        order_id = params.get("account", {}).get("order_id")
+        order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+        if not order:
+            return _payme_error(-31050, "Buyurtma topilmadi", "order_id")
+        amount = params.get("amount", 0)
+        if amount != order["total"] * 100:
+            return _payme_error(-31001, "Noto'g'ri summa", "amount")
+        return ok({"allow": True})
+
+    elif method == "CreateTransaction":
+        tx_id = params.get("id")
+        order_id = params.get("account", {}).get("order_id")
+        amount = params.get("amount", 0)
+        order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+        if not order:
+            return _payme_error(-31050, "Buyurtma topilmadi", "order_id")
+        if amount != order["total"] * 100:
+            return _payme_error(-31001, "Noto'g'ri summa", "amount")
+        existing = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if existing:
+            if existing["state"] == _PAYME_STATE_CANCELLED:
+                return _payme_error(-31008, "Tranzaksiya bekor qilingan")
+            return ok({"create_time": int(existing["created_at"] or 0), "transaction": str(existing["id"]), "state": existing["state"]})
+        ts = int(time.time() * 1000)
+        db_execute(
+            "INSERT INTO transactions (provider, provider_tx_id, order_id, amount, state, created_at) VALUES (?,?,?,?,?,?)",
+            ("payme", tx_id, order_id, amount, _PAYME_STATE_CREATED, str(ts))
+        )
+        row = db_fetchone("SELECT id FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        return ok({"create_time": ts, "transaction": str(row["id"]), "state": _PAYME_STATE_CREATED})
+
+    elif method == "PerformTransaction":
+        tx_id = params.get("id")
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        if tx["state"] == _PAYME_STATE_DONE:
+            return ok({"transaction": str(tx["id"]), "perform_time": int(tx["performed_at"] or 0), "state": _PAYME_STATE_DONE})
+        if tx["state"] != _PAYME_STATE_CREATED:
+            return _payme_error(-31008, "Amalga oshirib bo'lmaydi")
+        ts = int(time.time() * 1000)
+        db_execute("UPDATE transactions SET state=?, performed_at=? WHERE provider_tx_id=?", (_PAYME_STATE_DONE, str(ts), tx_id))
+        db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), tx["order_id"]))
+        return ok({"transaction": str(tx["id"]), "perform_time": ts, "state": _PAYME_STATE_DONE})
+
+    elif method == "CancelTransaction":
+        tx_id = params.get("id")
+        reason = params.get("reason", 0)
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        if tx["state"] in (_PAYME_STATE_CANCELLED, _PAYME_STATE_CANCELLED_AFTER_DONE):
+            return ok({"transaction": str(tx["id"]), "cancel_time": int(tx["cancelled_at"] or 0), "state": tx["state"]})
+        new_state = _PAYME_STATE_CANCELLED_AFTER_DONE if tx["state"] == _PAYME_STATE_DONE else _PAYME_STATE_CANCELLED
+        ts = int(time.time() * 1000)
+        db_execute("UPDATE transactions SET state=?, cancelled_at=?, reason=? WHERE provider_tx_id=?", (new_state, str(ts), reason, tx_id))
+        return ok({"transaction": str(tx["id"]), "cancel_time": ts, "state": new_state})
+
+    elif method == "CheckTransaction":
+        tx_id = params.get("id")
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        return ok({
+            "create_time": int(tx["created_at"] or 0),
+            "perform_time": int(tx["performed_at"] or 0),
+            "cancel_time": int(tx["cancelled_at"] or 0),
+            "transaction": str(tx["id"]),
+            "state": tx["state"],
+            "reason": tx.get("reason"),
+        })
+
+    return web.json_response({"error": {"code": -32601, "message": {"uz": "Method topilmadi"}}})
+
+
+# ─── CLICK WEBHOOK ───
+async def handle_click(request):
+    data = await request.post()
+    click_trans_id = data.get("click_trans_id", "")
+    service_id = data.get("service_id", "")
+    merchant_trans_id = data.get("merchant_trans_id", "")  # order_id
+    amount = float(data.get("amount", 0))
+    action = int(data.get("action", 0))
+    sign_time = data.get("sign_time", "")
+    sign_string = data.get("sign_string", "")
+    error = int(data.get("error", 0))
+
+    # Verify signature
+    if CLICK_SECRET_KEY:
+        expected_sign = hashlib.md5(f"{click_trans_id}{service_id}{CLICK_SECRET_KEY}{merchant_trans_id}{amount}{action}{sign_time}".encode()).hexdigest()
+        if sign_string != expected_sign:
+            return web.json_response({"error": -1, "error_note": "SIGN CHECK FAILED!"})
+
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (merchant_trans_id,))
+    if not order:
+        return web.json_response({"error": -5, "error_note": "User does not exist"})
+    if abs(order["total"] - amount) > 1:
+        return web.json_response({"error": -2, "error_note": "Incorrect parameter amount"})
+
+    if action == 0:  # prepare
+        return web.json_response({
+            "click_trans_id": click_trans_id,
+            "merchant_trans_id": merchant_trans_id,
+            "merchant_prepare_id": merchant_trans_id,
+            "error": 0,
+            "error_note": "Success"
+        })
+    elif action == 1:  # complete
+        if error < 0:
+            return web.json_response({"click_trans_id": click_trans_id, "merchant_trans_id": merchant_trans_id, "merchant_confirm_id": None, "error": error, "error_note": "Payment cancelled"})
+        db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), merchant_trans_id))
+        return web.json_response({
+            "click_trans_id": click_trans_id,
+            "merchant_trans_id": merchant_trans_id,
+            "merchant_confirm_id": merchant_trans_id,
+            "error": 0,
+            "error_note": "Success"
+        })
+    return web.json_response({"error": -3, "error_note": "Action not found"})
+
+
+# ─── YANDEX DELIVERY ───
+def _yandex_headers():
+    return {
+        "Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept-Language": "ru",
+    }
+
+
+async def handle_yandex_price(request):
+    """Yetkazish narxini hisoblash — admin panel uchun."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+
+    # Do'kon manzilini olish
+    store = db_fetchone("SELECT * FROM stores WHERE id=?", (order.get("store_id"),)) if order.get("store_id") else None
+    store_lat = data.get("store_lat") or 41.2995
+    store_lon = data.get("store_lon") or 69.2401
+
+    if not YANDEX_DELIVERY_TOKEN:
+        # Demo rejim — haqiqiy token bo'lmasa
+        return web.json_response({
+            "price": 25000,
+            "currency": "UZS",
+            "eta_min": 20,
+            "eta_max": 40,
+            "demo": True,
+        })
+
+    payload = {
+        "route_points": [
+            {
+                "coordinates": {"lat": store_lat, "lon": store_lon},
+                "fullname": store["address"] if store and store.get("address") else "Do'kon manzili",
+                "type": "source",
+            },
+            {
+                "coordinates": {"lat": order.get("lat") or 41.2995, "lon": order.get("lon") or 69.2401},
+                "fullname": order.get("address") or "Mijoz manzili",
+                "type": "destination",
+                "contact": {"name": order.get("full_name") or "Mijoz", "phone": order.get("phone") or ""},
+            },
+        ],
+        "items": [{"cost_value": str(order.get("total", 0)), "cost_currency": "UZS", "quantity": 1,
+                   "size": {"height": 0.3, "length": 0.4, "width": 0.3}, "weight": 2,
+                   "title": "Ovqat buyurtmasi"}],
+        "due": None,
+        "comment": f"Buyurtma #{order['id']}",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/check-price",
+                json=payload, headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                result = await resp.json()
+                if resp.status != 200:
+                    return web.json_response({"error": result}, status=resp.status)
+                price_data = result.get("price", {})
+                return web.json_response({
+                    "price": int(float(price_data.get("value", 25000))),
+                    "currency": price_data.get("currency", "UZS"),
+                    "eta_min": 20, "eta_max": 45,
+                })
+    except Exception as e:
+        logger.exception("Yandex price error")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_create(request):
+    """Yandex Delivery orqali kuryer chaqirish."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    store_lat = data.get("store_lat", 41.2995)
+    store_lon = data.get("store_lon", 69.2401)
+    store_name = data.get("store_name", "Do'kon")
+    store_phone = data.get("store_phone", "+998901234567")
+
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+
+    if not YANDEX_DELIVERY_TOKEN:
+        # Demo rejim
+        fake_claim_id = f"demo-{order_id}-{int(time.time())}"
+        db_execute(
+            "UPDATE orders SET yandex_claim_id=?, yandex_status=?, delivery_type=?, yandex_tracking_url=? WHERE id=?",
+            (fake_claim_id, "estimating", "yandex",
+             f"https://taxi.yandex.uz/share/{fake_claim_id}", order_id)
+        )
+        return web.json_response({
+            "claim_id": fake_claim_id,
+            "status": "estimating",
+            "tracking_url": f"https://taxi.yandex.uz/share/{fake_claim_id}",
+            "demo": True,
+        })
+
+    import uuid
+    request_id = str(uuid.uuid4())
+    payload = {
+        "request_id": request_id,
+        "callback_properties": {"callback_url": f"{WEBAPP_URL}/api/yandex_webhook"},
+        "route_points": [
+            {
+                "coordinates": {"lat": store_lat, "lon": store_lon},
+                "fullname": store_name,
+                "type": "source",
+                "contact": {"name": store_name, "phone": store_phone},
+                "skip_confirmation": True,
+            },
+            {
+                "coordinates": {
+                    "lat": order.get("lat") or 41.2995,
+                    "lon": order.get("lon") or 69.2401,
+                },
+                "fullname": order.get("address") or "Mijoz manzili",
+                "type": "destination",
+                "contact": {
+                    "name": order.get("full_name") or "Mijoz",
+                    "phone": order.get("phone") or "+998900000000",
+                },
+            },
+        ],
+        "items": [
+            {
+                "cost_value": str(order.get("total", 0)),
+                "cost_currency": "UZS",
+                "droppof_point": 1,
+                "quantity": 1,
+                "size": {"height": 0.3, "length": 0.4, "width": 0.3},
+                "weight": 2,
+                "title": f"Buyurtma #{order['id']}",
+            }
+        ],
+        "comment": f"Buyurtma #{order['id']}: {order.get('items', '')[:100]}",
+        "requirements": {"taxi_class": "express"},
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={request_id}",
+                json=payload, headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                result = await resp.json()
+                if resp.status not in (200, 201):
+                    return web.json_response({"error": result}, status=resp.status)
+
+                claim_id = result.get("id", "")
+                status = result.get("status", "estimating")
+                tracking_url = f"https://taxi.yandex.uz/route/{claim_id}"
+
+                db_execute(
+                    "UPDATE orders SET yandex_claim_id=?, yandex_status=?, delivery_type=?, yandex_tracking_url=? WHERE id=?",
+                    (claim_id, status, "yandex", tracking_url, order_id)
+                )
+
+                # Confirm claim (accept price automatically)
+                await asyncio.sleep(2)
+                async with session.post(
+                    f"{YANDEX_DELIVERY_URL}/claims/accept?claim_id={claim_id}",
+                    json={"version": result.get("version", 1)},
+                    headers=_yandex_headers()
+                ) as _:
+                    pass
+
+                return web.json_response({
+                    "claim_id": claim_id,
+                    "status": status,
+                    "tracking_url": tracking_url,
+                })
+    except Exception as e:
+        logger.exception("Yandex create error")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_status(request):
+    """Yandex buyurtma holatini tekshirish."""
+    order_id = request.query.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order or not order.get("yandex_claim_id"):
+        return web.json_response({"error": "no yandex delivery"}, status=404)
+
+    claim_id = order["yandex_claim_id"]
+
+    if not YANDEX_DELIVERY_TOKEN or claim_id.startswith("demo-"):
+        return web.json_response({
+            "claim_id": claim_id,
+            "status": order.get("yandex_status", "estimating"),
+            "tracking_url": order.get("yandex_tracking_url"),
+            "demo": True,
+        })
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{YANDEX_DELIVERY_URL}/claims/info?claim_id={claim_id}",
+                headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                result = await resp.json()
+                status = result.get("status", "unknown")
+                db_execute("UPDATE orders SET yandex_status=? WHERE id=?", (status, order_id))
+                return web.json_response({
+                    "claim_id": claim_id,
+                    "status": status,
+                    "tracking_url": order.get("yandex_tracking_url"),
+                    "courier": result.get("performer_info", {}).get("name"),
+                    "courier_phone": result.get("performer_info", {}).get("phone"),
+                })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_webhook(request):
+    """Yandex Delivery status webhook."""
+    try:
+        data = await request.json()
+        claim_id = data.get("id")
+        status = data.get("status")
+        if claim_id and status:
+            order = db_fetchone("SELECT * FROM orders WHERE yandex_claim_id=?", (claim_id,))
+            if order:
+                db_execute("UPDATE orders SET yandex_status=? WHERE yandex_claim_id=?", (status, claim_id))
+                if status in ("delivered", "delivery_arrived"):
+                    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE yandex_claim_id=?",
+                               (now_iso(), claim_id))
+    except Exception:
+        pass
+    return web.json_response({"ok": True})
+
+
+async def handle_yandex_cancel(request):
+    """Yandex kuryerini bekor qilish."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order or not order.get("yandex_claim_id"):
+        return web.json_response({"error": "no yandex delivery"}, status=404)
+
+    claim_id = order["yandex_claim_id"]
+    if not YANDEX_DELIVERY_TOKEN or claim_id.startswith("demo-"):
+        db_execute("UPDATE orders SET yandex_status='cancelled', delivery_type='own' WHERE id=?", (order_id,))
+        return web.json_response({"status": "cancelled", "demo": True})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/cancel?claim_id={claim_id}",
+                json={"cancel_state": "free", "version": 1},
+                headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                db_execute("UPDATE orders SET yandex_status='cancelled', delivery_type='own' WHERE id=?", (order_id,))
+                return web.json_response({"status": "cancelled"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── DAILY REPORT BACKGROUND TASK ───
+async def daily_report_loop(bot: "Bot"):
+    while True:
+        now = datetime.now(timezone.utc)
+        # Schedule for 18:00 UTC (≈23:00 Tashkent +5)
+        target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target + timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            today = date.today().isoformat()
+            stores = db_fetchall("SELECT * FROM stores")
+            for store in stores:
+                sid = store["id"]
+                row = db_fetchone(
+                    "SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE store_id=? AND created_at LIKE ?",
+                    (sid, today + "%")
+                ) or {}
+                top = db_fetchall(
+                    """SELECT items, COUNT(*) as c FROM orders
+                       WHERE store_id=? AND created_at LIKE ?
+                       GROUP BY items ORDER BY c DESC LIMIT 3""",
+                    (sid, today + "%")
+                )
+                msg = (
+                    f"📊 <b>{store['name']} — Kunlik hisobot</b>\n"
+                    f"📅 {today}\n\n"
+                    f"📦 Buyurtmalar: <b>{row.get('cnt', 0)}</b>\n"
+                    f"💰 Tushum: <b>{row.get('rev', 0):,} so'm</b>\n"
+                )
+                if top:
+                    msg += "\n🔥 Top mahsulotlar:\n"
+                    for t in top:
+                        msg += f"  • {t['items']} ({t['c']} ta)\n"
+                try:
+                    await bot.send_message(store["admin_id"], msg, parse_mode="HTML")
+                except Exception:
+                    pass
+                # Update monthly order count in subscription
+                _get_or_create_subscription(sid, store["admin_id"])
+        except Exception as e:
+            logger.exception(f"Daily report error: {e}")
+
+
+async def handle_stats(request):
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    store_cond = " AND store_id=?" if store else ""
+    store_p = (store['id'],) if store else ()
+
+    today = date.today().isoformat()
+
+    today_row = db_fetchone(
+        f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE created_at LIKE ?{store_cond}",
+        (today + '%',) + store_p
+    ) or {}
+
+    total_row = db_fetchone(
+        f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE 1=1{store_cond}",
+        store_p
+    ) or {}
+
+    active_row = db_fetchone(
+        f"SELECT COUNT(*) as cnt FROM orders WHERE status='IN_PROGRESS'{store_cond}",
+        store_p
+    ) or {}
+
+    weekly = []
+    for i in range(6, -1, -1):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        row = db_fetchone(
+            f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE created_at LIKE ?{store_cond}",
+            (d + '%',) + store_p
+        ) or {}
+        weekly.append({"date": d, "count": row.get('cnt', 0), "revenue": row.get('rev', 0)})
+
+    return web.json_response({
+        "today_orders": today_row.get('cnt', 0),
+        "today_revenue": today_row.get('rev', 0),
+        "total_orders": total_row.get('cnt', 0),
+        "total_revenue": total_row.get('rev', 0),
+        "active_deliveries": active_row.get('cnt', 0),
+        "weekly": weekly,
+    })
+
 # 1. Portni dinamik qiling (Kodingizning tepa qismida)
 WEBAPP_PORT = int(os.environ.get("PORT", 10000))
 
@@ -758,11 +1623,38 @@ async def main():
     app.router.add_get('/', handle_index)
     app.router.add_get('/index1.html', handle_index)
     app.router.add_get('/admin.html', handle_admin)
+    app.router.add_get('/onboarding.html', lambda r: web.FileResponse('webapp/onboarding.html'))
+    app.router.add_post('/api/register', handle_register)
     app.router.add_get('/api/data', handle_api_data)
     app.router.add_get('/api/admin_data', handle_admin_data)
     app.router.add_post('/api/store', handle_update_store)
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
+    app.router.add_get('/api/orders', handle_orders)
+    app.router.add_get('/api/stats', handle_stats)
+    app.router.add_post('/api/order_status', handle_order_status)
+    # Branding
+    app.router.add_get('/api/branding', handle_branding)
+    app.router.add_post('/api/branding', handle_update_branding)
+    # Order tracking
+    app.router.add_get('/api/order_track', handle_order_track)
+    # Ratings
+    app.router.add_post('/api/rating', handle_submit_rating)
+    app.router.add_get('/api/ratings', handle_ratings)
+    # Subscription
+    app.router.add_get('/api/subscription', handle_subscription)
+    app.router.add_post('/api/subscription', handle_upgrade_subscription)
+    # Payment webhooks
+    app.router.add_post('/api/payme', handle_payme)
+    app.router.add_post('/api/click', handle_click)
+    # Yandex Delivery
+    app.router.add_post('/api/yandex/price', handle_yandex_price)
+    app.router.add_post('/api/yandex/create', handle_yandex_create)
+    app.router.add_get('/api/yandex/status', handle_yandex_status)
+    app.router.add_post('/api/yandex/cancel', handle_yandex_cancel)
+    app.router.add_post('/api/yandex_webhook', handle_yandex_webhook)
+    # Landing page
+    app.router.add_get('/landing', lambda r: web.FileResponse('webapp/landing.html'))
 
     # Statik fayllar uchun (agar kerak bo'lsa)
     if os.path.exists("webapp"):
@@ -776,8 +1668,10 @@ async def main():
     await site.start()
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    # 5. Botni polling rejimida yoqish
-    # skip_updates=True eski kelgan xabarlarni o'chirib yuboradi
+    # 5. Kunlik hisobot fon vazifasi
+    asyncio.create_task(daily_report_loop(bot))
+
+    # 6. Botni polling rejimida yoqish
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
