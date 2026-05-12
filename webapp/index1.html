@@ -156,6 +156,19 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 .search-btn{display:flex;align-items:center;gap:9px;background:var(--fill);border-radius:12px;padding:11px 14px;margin-bottom:2px;cursor:pointer;border:none;width:100%;font-family:var(--font);text-align:left}
 .search-btn svg{color:var(--lbl3);flex-shrink:0}
 .search-btn-txt{font-size:16px;color:var(--lbl3);flex:1}
+.region-pill{display:flex;align-items:center;gap:8px;background:var(--bg2);border:.5px solid var(--sep);border-radius:12px;padding:10px 14px;margin-bottom:8px;cursor:pointer;width:100%;font-family:var(--font);color:var(--lbl)}
+.region-pill:active{transform:scale(.98)}
+
+/* Region picker overlay */
+#region-ov{position:fixed;inset:0;z-index:260;display:flex;flex-direction:column;justify-content:flex-end}
+#region-ov.gone{display:none}
+.reg-back{position:absolute;inset:0;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);animation:bdIn .22s ease}
+.reg-sheet{position:relative;z-index:1;background:var(--bg2);border-radius:24px 24px 0 0;padding-bottom:var(--sb);animation:sheetUp .32s cubic-bezier(.32,.72,0,1);max-height:80vh;overflow-y:auto}
+.reg-hd{padding:18px 20px 12px;font-size:20px;font-weight:700;letter-spacing:-.3px;display:flex;justify-content:space-between;align-items:center}
+.reg-opt{display:flex;align-items:center;gap:10px;padding:14px 20px;border-top:.5px solid var(--sep);cursor:pointer;font-size:15px;font-weight:500}
+.reg-opt:active{background:var(--fill2)}
+.reg-opt.on{color:var(--acc);font-weight:700}
+.reg-opt.on::after{content:'✓';margin-left:auto;font-size:18px}
 /* ===== ALERT ===== */
 .alert-row{padding:10px 16px 0;display:flex}
 .alert-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--acc-l);border-radius:20px;font-size:13px;font-weight:600;color:var(--acc)}
@@ -532,6 +545,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
       <div class="hh">
         <div class="hh-row">
           <div class="hh-logo">Laz<span>zat</span></div>
+          <button class="icon-btn" onclick="openRegionPicker()" title="Mintaqa">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s-8-7-8-13a8 8 0 1116 0c0 6-8 13-8 13z"/><circle cx="12" cy="9" r="3"/></svg>
+          </button>
           <button class="icon-btn" onclick="openCart()">
             <div class="nb-cw">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
@@ -539,6 +555,11 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
             </div>
           </button>
         </div>
+        <button class="region-pill" id="regionPill" onclick="openRegionPicker()">
+          <span style="font-size:13px">📍</span>
+          <span id="regionLbl" style="font-size:13px;font-weight:600;color:var(--lbl);flex:1;text-align:left">Mintaqa: Barchasi</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
         <button class="search-btn" onclick="openSearch()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <span class="search-btn-txt" id="searchPlaceholder">Restoran yoki taom qidiring...</span>
@@ -702,6 +723,27 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
   <div class="succ-t" id="succT">Buyurtma qabul qilindi!</div>
   <div class="succ-s" id="succS">Botga qayting va ism hamda<br>manzilingizni kiriting.</div>
   <div class="succ-dots"><div class="succ-dot"></div><div class="succ-dot"></div><div class="succ-dot"></div></div>
+</div>
+
+<!-- REGION SHEET -->
+<div id="region-ov" class="gone">
+  <div class="reg-back" onclick="closeRegionPicker()"></div>
+  <div class="reg-sheet">
+    <div class="reg-hd">
+      <span>📍 Mintaqa tanlang</span>
+      <button onclick="closeRegionPicker()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--lbl2)">✕</button>
+    </div>
+    <div id="regionList"></div>
+  </div>
+</div>
+
+<!-- PRODUCT DETAIL SHEET -->
+<div id="prod-ov" class="gone" style="position:fixed;inset:0;z-index:270;display:flex;flex-direction:column;justify-content:flex-end">
+  <div onclick="closeProdDetail()" style="position:absolute;inset:0;background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:bdIn .22s ease"></div>
+  <div id="prodSheet" style="position:relative;z-index:1;background:var(--bg2);border-radius:28px 28px 0 0;padding:0 0 calc(20px + var(--sb));animation:sheetUp .38s cubic-bezier(.32,.72,0,1);max-height:92vh;overflow-y:auto">
+    <div style="padding:12px 0 0;display:flex;justify-content:center"><div style="width:36px;height:4px;background:var(--sep2);border-radius:2px"></div></div>
+    <div id="prodContent" style="padding:8px 20px 0"></div>
+  </div>
 </div>
 
 <!-- LANGUAGE SHEET -->
@@ -1022,19 +1064,116 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── DATA ──
+// User's selected region (saved in localStorage)
+let userRegion = localStorage.getItem('userRegion') || '';
+
 async function loadData() {
   try {
-    const r = await fetch('/api/data');
+    const url = '/api/data' + (userRegion ? '?region=' + encodeURIComponent(userRegion) : '');
+    const r = await fetch(url);
     const d = await r.json();
     stores = d.stores || [];
     menu = d.menuItems || {};
+    // build pMap from latest menu (clear old)
+    for (const k in pMap) delete pMap[k];
     Object.values(menu).flat().forEach(p => pMap[p.id] = p);
-    // Use delivery fee from first store if available
     if (stores[0]?.delivery_fee) DELIVERY_FEE = stores[0].delivery_fee;
+    updateRegionLabel();
     renderStores(); renderPopular(); renderRestGrid(); renderFavs();
   } catch(e) {
-    document.getElementById('strList').innerHTML = '<div style="padding:20px;color:var(--lbl2);font-size:14px;white-space:nowrap">Yuklanmadi. Internetni tekshiring.</div>';
+    const sl = document.getElementById('strList');
+    if (sl) sl.innerHTML = '<div style="padding:20px;color:var(--lbl2);font-size:14px;white-space:nowrap">Yuklanmadi. Internetni tekshiring.</div>';
   }
+}
+
+// ── REGION PICKER ──
+const UZ_REGIONS = [
+  '', 'Toshkent shahri', 'Toshkent viloyati', 'Andijon', 'Buxoro',
+  "Farg'ona", 'Jizzax', 'Namangan', 'Navoiy', 'Qashqadaryo',
+  'Samarqand', 'Sirdaryo', 'Surxondaryo', 'Xorazm', "Qoraqalpog'iston"
+];
+
+function updateRegionLabel() {
+  const lbl = document.getElementById('regionLbl');
+  if (lbl) lbl.textContent = userRegion ? '📍 ' + userRegion : 'Mintaqa: Barchasi';
+}
+
+function openRegionPicker() {
+  const list = document.getElementById('regionList');
+  list.innerHTML = UZ_REGIONS.map(r => {
+    const label = r || '🌍 Barcha mintaqalar';
+    const isOn = (userRegion === r) ? ' on' : '';
+    return `<div class="reg-opt${isOn}" onclick="pickRegion('${r.replace(/'/g, "\\'")}')">${label}</div>`;
+  }).join('');
+  document.getElementById('region-ov').classList.remove('gone');
+  hap.light();
+}
+
+function closeRegionPicker() {
+  document.getElementById('region-ov').classList.add('gone');
+  hap.light();
+}
+
+function pickRegion(r) {
+  userRegion = r;
+  localStorage.setItem('userRegion', r);
+  closeRegionPicker();
+  updateRegionLabel();
+  // Save to server if user is registered
+  const uid = parseInt(localStorage.getItem('user_id') || '0') || tg.initDataUnsafe?.user?.id;
+  if (uid) {
+    fetch('/api/user_region', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ user_id: uid, region: r })
+    }).catch(() => {});
+  }
+  loadData();
+}
+
+// ── PRODUCT DETAIL ──
+function openProdDetail(productId) {
+  const p = pMap[productId];
+  if (!p) return;
+  const s = stores.find(x => x.id == p.store_id);
+  const hasDisc = p.old_price && p.old_price > p.price;
+  const discPct = hasDisc ? Math.round((1 - p.price / p.old_price) * 100) : 0;
+  document.getElementById('prodContent').innerHTML = `
+    <div style="position:relative;height:200px;border-radius:18px;background:linear-gradient(135deg, var(--acc), #8B0000);display:flex;align-items:center;justify-content:center;margin-top:14px;overflow:hidden">
+      <div style="font-size:96px;filter:drop-shadow(0 6px 16px rgba(0,0,0,.3))">${p.emoji||'🍽️'}</div>
+      ${hasDisc ? `<div style="position:absolute;top:14px;right:14px;background:#FFD600;color:#000;padding:6px 12px;border-radius:14px;font-weight:800;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.2)">-${discPct}%</div>` : ''}
+      <button onclick="closeProdDetail()" style="position:absolute;top:14px;left:14px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.4);color:#fff;border:none;font-size:18px;cursor:pointer;backdrop-filter:blur(8px)">✕</button>
+    </div>
+    <div style="padding:20px 0 0">
+      <div style="font-size:24px;font-weight:800;letter-spacing:-.5px;color:var(--lbl)">${p.name}</div>
+      ${p.cat ? `<div style="margin-top:6px;display:inline-block;padding:4px 10px;background:var(--fill2);border-radius:10px;font-size:12px;font-weight:700;color:var(--lbl2);text-transform:uppercase;letter-spacing:.4px">${p.cat}</div>` : ''}
+      ${p.desc ? `<div style="margin-top:12px;font-size:14px;color:var(--lbl2);line-height:1.5">${p.desc}</div>` : ''}
+      <div style="margin-top:18px;padding:14px;background:var(--bg);border-radius:14px;display:flex;align-items:baseline;gap:10px">
+        <span style="font-size:26px;font-weight:800;color:var(--acc)">${(p.price||0).toLocaleString()} so'm</span>
+        ${hasDisc ? `<span style="font-size:15px;color:var(--lbl3);text-decoration:line-through">${p.old_price.toLocaleString()}</span>` : ''}
+      </div>
+      ${s ? `<div style="margin-top:14px;padding:14px;background:var(--bg);border-radius:14px">
+        <div style="font-size:11px;color:var(--lbl3);font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Restoran</div>
+        <div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="closeProdDetail();openStore(${s.id})">
+          <span style="font-size:24px">${s.emoji||'🍔'}</span>
+          <div style="flex:1">
+            <div style="font-weight:700;color:var(--lbl)">${s.name}</div>
+            <div style="font-size:12px;color:var(--lbl2)">${s.type||''}${s.city?' · '+s.city:''}</div>
+          </div>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--lbl3)"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>` : ''}
+      <button onclick="addCart(${p.id});closeProdDetail()"
+        style="margin-top:16px;width:100%;padding:16px;border:none;border-radius:16px;background:var(--acc);color:#fff;font-size:16px;font-weight:700;cursor:pointer;font-family:var(--font);box-shadow:0 6px 20px rgba(198,40,40,.35)">
+        🛒 Savatga qo'shish
+      </button>
+    </div>
+  `;
+  document.getElementById('prod-ov').classList.remove('gone');
+  hap.light();
+}
+
+function closeProdDetail() {
+  document.getElementById('prod-ov').classList.add('gone');
 }
 
 // ── BGTAB ──
@@ -1094,11 +1233,15 @@ function doRestSearch(q) {
   el.innerHTML = list.map((s,i) => storeCardHTML(s,i,true)).join('') || `<div class="empty-s" style="grid-column:1/-1"><div class="empty-em">🔍</div><div class="empty-t">Topilmadi</div></div>`;
 }
 
-// ── POPULAR / FAVS ──
+// ── POPULAR / DISCOUNTED ──
 function renderPopular() {
   const all = Object.values(menu).flat();
   const disc = all.filter(p => p.old_price && p.old_price > p.price);
-  const items = disc.length >= 2 ? disc.slice(0,6) : all.slice(0,6);
+  const hasDisc = disc.length >= 1;
+  const items = hasDisc ? disc.slice(0,12) : all.slice(0,6);
+  // Update section label dynamically
+  const lbl = document.getElementById('popLbl');
+  if (lbl) lbl.textContent = hasDisc ? '🔥 Chegirmadagi mahsulotlar' : (t('popular') || 'Mashhurlar');
   document.getElementById('popList').innerHTML = items.length
     ? items.map((p,i) => piHTML(p,i)).join('')
     : `<div class="empty-s"><div class="empty-em">🍽️</div><div class="empty-t">Taomlar yo'q</div></div>`;
@@ -1142,7 +1285,7 @@ function piHTML(p, i=0) {
 
   const tagHTML = tags.length ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${tags.map(tg=>`<span class="pi-tag ${tg.k}">${tg.v}</span>`).join('')}</div>` : '';
 
-  return `<div class="pi" style="animation-delay:${i*.06}s">
+  return `<div class="pi" style="animation-delay:${i*.06}s;cursor:pointer" onclick="openProdDetail(${p.id})">
     <div class="pi-box">
       ${p.emoji||'🍽️'}
       ${pct > 0 ? `<div class="pi-disc-badge">-${pct}%</div>` : ''}
@@ -1158,8 +1301,8 @@ function piHTML(p, i=0) {
       </div>
     </div>
     ${inc
-      ? `<div class="qty-c"><button class="q-b" onclick="updQ(${p.id},-1,event)">−</button><span class="q-v">${inc.qty}</span><button class="q-b" onclick="updQ(${p.id},1,event)">+</button></div>`
-      : `<button class="add-btn" onclick="addCart(${p.id},event)">+</button>`}
+      ? `<div class="qty-c" onclick="event.stopPropagation()"><button class="q-b" onclick="updQ(${p.id},-1,event)">−</button><span class="q-v">${inc.qty}</span><button class="q-b" onclick="updQ(${p.id},1,event)">+</button></div>`
+      : `<button class="add-btn" onclick="event.stopPropagation();addCart(${p.id},event)">+</button>`}
   </div>`;
 }
 

@@ -1510,6 +1510,50 @@ function renderSettings() {
       </button>
     </div>
 
+    <!-- ===== LOCATION / REGION ===== -->
+    <div class="card" style="display:flex;flex-direction:column;gap:12px">
+      <div class="card-title">📍 Joylashuv</div>
+      <div class="form-grp">
+        <label class="form-lbl">Viloyat</label>
+        <select class="form-inp" id="sRegion">
+          <option value="">— tanlang —</option>
+          ${["Toshkent shahri","Toshkent viloyati","Andijon","Buxoro","Farg'ona","Jizzax","Namangan","Navoiy","Qashqadaryo","Samarqand","Sirdaryo","Surxondaryo","Xorazm","Qoraqalpog'iston"].map(r=>
+            `<option value="${r}" ${storeData?.region===r?'selected':''}>${r}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="input-row">
+        <div class="form-grp">
+          <label class="form-lbl">Shahar</label>
+          <input class="form-inp" id="sCity" value="${storeData?.city||''}" placeholder="Toshkent">
+        </div>
+        <div class="form-grp">
+          <label class="form-lbl">Tuman</label>
+          <input class="form-inp" id="sDistrict" value="${storeData?.district||''}" placeholder="Chilonzor">
+        </div>
+      </div>
+      <div class="form-grp">
+        <label class="form-lbl">Manzil (ko'cha, uy)</label>
+        <input class="form-inp" id="sAddress" value="${storeData?.address||''}" placeholder="Mustaqillik ko'chasi, 12-uy">
+      </div>
+      <div class="form-grp">
+        <label class="form-lbl">Telefon</label>
+        <input class="form-inp" id="sPhone" value="${storeData?.phone||''}" placeholder="+998 90 123 45 67" inputmode="tel">
+      </div>
+      <button class="btn btn-ghost btn-full" onclick="pickGpsLocation()" style="border:1.5px solid var(--red);color:var(--red);font-weight:700">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s-8-7-8-13a8 8 0 1116 0c0 6-8 13-8 13z"/><circle cx="12" cy="9" r="3"/></svg>
+        <span id="gpsLbl">📡 Aniq joylashuvni aniqlash (GPS)</span>
+      </button>
+      <div id="gpsResult" style="display:${storeData?.lat?'flex':'none'};font-size:13px;color:var(--text2);gap:6px;align-items:center;padding:8px 12px;background:var(--bg);border-radius:10px">
+        <span>📌</span>
+        <span id="gpsCoords">${storeData?.lat?`${storeData.lat.toFixed(5)}, ${storeData.lon.toFixed(5)}`:''}</span>
+      </div>
+      <button class="btn btn-dark btn-full" onclick="saveLocation()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        Joylashuvni saqlash
+      </button>
+    </div>
+
     <div class="card" style="display:flex;flex-direction:column;gap:12px">
       <div class="card-title">🕐 Ish vaqti</div>
       <div class="form-grp">
@@ -1581,16 +1625,6 @@ function renderSettings() {
         <label class="form-lbl">Tavsif</label>
         <input class="form-inp" id="sDesc" value="${storeData?.description||''}" placeholder="Restoran haqida qisqacha...">
       </div>
-      <div class="input-row">
-        <div class="form-grp">
-          <label class="form-lbl">Telefon</label>
-          <input class="form-inp" id="sPhone" value="${storeData?.phone||''}" placeholder="+998 90 123 45 67" inputmode="tel">
-        </div>
-        <div class="form-grp">
-          <label class="form-lbl">Manzil</label>
-          <input class="form-inp" id="sAddress" value="${storeData?.address||''}" placeholder="Ko'cha, uy">
-        </div>
-      </div>
       <button class="btn btn-dark btn-full" onclick="saveBranding()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
         Brendingni saqlash
@@ -1634,6 +1668,67 @@ function announcePause() {
   showToast('⏸️ Tanaffus rejimi yoqildi (demo)');
 }
 
+// Holds GPS coordinates picked by admin
+let pickedLat = null, pickedLon = null;
+
+function pickGpsLocation() {
+  const lbl = document.getElementById('gpsLbl');
+  if (!navigator.geolocation) {
+    showToast('❌ Brauzeringiz GPS ni qo\'llab-quvvatlamaydi');
+    return;
+  }
+  lbl.textContent = '⏳ Aniqlanmoqda...';
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      pickedLat = pos.coords.latitude;
+      pickedLon = pos.coords.longitude;
+      document.getElementById('gpsResult').style.display = 'flex';
+      document.getElementById('gpsCoords').textContent = `${pickedLat.toFixed(5)}, ${pickedLon.toFixed(5)}`;
+      lbl.textContent = '✅ GPS aniqlandi (saqlash uchun pastdagi tugmani bosing)';
+      showToast('📍 GPS olindi');
+    },
+    err => {
+      lbl.textContent = '📡 Aniq joylashuvni aniqlash (GPS)';
+      showToast('❌ GPS xato: ' + err.message);
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+async function saveLocation() {
+  if (!ADMIN_ID || !storeData) { showToast('⚠️ Avval do\'kon yarating'); return; }
+  const region   = document.getElementById('sRegion')?.value || '';
+  const city     = document.getElementById('sCity')?.value.trim() || '';
+  const district = document.getElementById('sDistrict')?.value.trim() || '';
+  const address  = document.getElementById('sAddress')?.value.trim() || '';
+  const phone    = document.getElementById('sPhone')?.value.trim() || '';
+  const lat = pickedLat ?? storeData.lat ?? null;
+  const lon = pickedLon ?? storeData.lon ?? null;
+  showToast('⏳ Saqlanmoqda...');
+  try {
+    const r = await fetch('/api/store', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        admin_id: ADMIN_ID,
+        name: storeData.name, type: storeData.type, emoji: storeData.emoji,
+        delivery_fee: storeData.delivery_fee, eta: storeData.eta,
+        radius: storeData.radius, min_order: storeData.min_order,
+        hours_weekday: storeData.hours_weekday,
+        hours_weekend: storeData.hours_weekend,
+        description: storeData.description || '',
+        region, city, district, address, phone, lat, lon
+      })
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + text);
+    showToast('✅ Joylashuv saqlandi!');
+    await loadAdminData();
+  } catch(e) {
+    console.error('saveLocation:', e);
+    showToast('❌ ' + e.message);
+  }
+}
+
 async function saveStore() {
   if (!ADMIN_ID) { showToast('❌ ID=0. Botdan oching!'); return; }
   const name  = (document.getElementById('sName')?.value  || '').trim();
@@ -1649,6 +1744,14 @@ async function saveStore() {
     min_order:    storeData?.min_order ?? 50000,
     hours_weekday: storeData?.hours_weekday || '09:00-22:00',
     hours_weekend: storeData?.hours_weekend || '10:00-23:00',
+    region:   storeData?.region || '',
+    city:     storeData?.city || '',
+    district: storeData?.district || '',
+    address:  storeData?.address || '',
+    phone:    storeData?.phone || '',
+    description: storeData?.description || '',
+    lat:      storeData?.lat ?? null,
+    lon:      storeData?.lon ?? null,
   };
   showToast('⏳ Saqlanmoqda...');
   try {
@@ -1686,6 +1789,10 @@ async function saveHours() {
         min_order: storeData.min_order ?? 50000,
         hours_weekday: `${hf1}-${ht1}`,
         hours_weekend: `${hf2}-${ht2}`,
+        region: storeData.region || '', city: storeData.city || '',
+        district: storeData.district || '', address: storeData.address || '',
+        phone: storeData.phone || '', description: storeData.description || '',
+        lat: storeData.lat ?? null, lon: storeData.lon ?? null,
       })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);

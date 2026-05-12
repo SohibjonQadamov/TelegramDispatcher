@@ -87,7 +87,8 @@ _TABLES_SQL = [
         registered_at TEXT,
         first_name TEXT, last_name TEXT,
         username TEXT, language_code TEXT,
-        photo_url TEXT, onboarded INTEGER DEFAULT 0
+        photo_url TEXT, onboarded INTEGER DEFAULT 0,
+        region TEXT, city TEXT, district TEXT
     )""",
     # stores  ← CENTRAL TABLE: stores/products/orders separated
     """CREATE TABLE IF NOT EXISTS stores (
@@ -103,7 +104,9 @@ _TABLES_SQL = [
         is_open INTEGER DEFAULT 1,
         accent_color TEXT DEFAULT '#FF6B35',
         cover_url TEXT, description TEXT,
-        phone TEXT, address TEXT
+        phone TEXT, address TEXT,
+        region TEXT, city TEXT, district TEXT,
+        lat REAL, lon REAL
     )""",
     # products  ← SEPARATE from stores
     """CREATE TABLE IF NOT EXISTS products (
@@ -187,6 +190,14 @@ def _init_db_pg():
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS description TEXT",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS phone TEXT",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS address TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS region TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS district TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lat REAL",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lon REAL",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS district TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
@@ -246,6 +257,14 @@ def _init_db_sqlite():
             "ALTER TABLE stores ADD COLUMN description TEXT",
             "ALTER TABLE stores ADD COLUMN phone TEXT",
             "ALTER TABLE stores ADD COLUMN address TEXT",
+            "ALTER TABLE stores ADD COLUMN region TEXT",
+            "ALTER TABLE stores ADD COLUMN city TEXT",
+            "ALTER TABLE stores ADD COLUMN district TEXT",
+            "ALTER TABLE stores ADD COLUMN lat REAL",
+            "ALTER TABLE stores ADD COLUMN lon REAL",
+            "ALTER TABLE users ADD COLUMN region TEXT",
+            "ALTER TABLE users ADD COLUMN city TEXT",
+            "ALTER TABLE users ADD COLUMN district TEXT",
             # products — ALL columns
             "ALTER TABLE products ADD COLUMN store_id INTEGER",
             "ALTER TABLE products ADD COLUMN name TEXT",
@@ -926,11 +945,23 @@ async def handle_admin(request):
     return web.FileResponse('webapp/admin.html')
 
 async def handle_api_data(request):
+    # Optional region filter — users see only stores in their region
+    region = (request.query.get("region") or '').strip()
+    city   = (request.query.get("city")   or '').strip()
+
     stores_db = db_fetchall("SELECT * FROM stores")
     products_db = db_fetchall("SELECT * FROM products")
-    
+
     stores = []
     for s in stores_db:
+        s_region   = s.get('region')   or ''
+        s_city     = s.get('city')     or ''
+        s_district = s.get('district') or ''
+        # Apply region filter if user provided one
+        if region and s_region and s_region.lower() != region.lower():
+            continue
+        if city and s_city and s_city.lower() != city.lower():
+            continue
         stores.append({
             "id": s['id'],
             "name": s['name'] or '',
@@ -941,25 +972,37 @@ async def handle_api_data(request):
             "bg": s['bg_color'] or "linear-gradient(135deg, #a18cd1, #fbc2eb)",
             "delivery_fee": s['delivery_fee'] or 15000,
             "min_order": s['min_order'] or 50000,
+            "region": s_region,
+            "city": s_city,
+            "district": s_district,
+            "address": s.get('address') or '',
+            "phone": s.get('phone') or '',
+            "description": s.get('description') or '',
+            "lat": s.get('lat'),
+            "lon": s.get('lon'),
         })
-        
+    visible_store_ids = {s['id'] for s in stores}
+
     menuItems = {}
     for p in products_db:
         sid = p['store_id']
+        # only include products for visible stores
+        if sid not in visible_store_ids:
+            continue
         if sid not in menuItems: menuItems[sid] = []
         menuItems[sid].append({
             "id": p['id'],
-            "name": p['name'],
-            "price": p['price'],
+            "name": p['name'] or '',
+            "price": p['price'] or 0,
             "desc": p.get('desc') or '',
-            "emoji": p['emoji'],
-            "cat": p['cat'],
+            "emoji": p['emoji'] or '🍽️',
+            "cat": p['cat'] or '',
             "store_id": p['store_id'],
             "old_price": p['old_price'],
             "discount_qty": p['discount_qty'],
             "discount_end": p['discount_end']
         })
-        
+
     return web.json_response({"stores": stores, "menuItems": menuItems})
 
 async def handle_admin_data(request):
@@ -1000,19 +1043,31 @@ async def handle_update_store(request):
         min_order     = int(data.get('min_order') or 50000)
         hours_weekday = str(data.get('hours_weekday') or '09:00-22:00')
         hours_weekend = str(data.get('hours_weekend') or '10:00-23:00')
+        region        = (data.get('region') or '').strip()
+        city          = (data.get('city') or '').strip()
+        district      = (data.get('district') or '').strip()
+        address       = (data.get('address') or '').strip()
+        phone         = (data.get('phone') or '').strip()
+        description   = (data.get('description') or '').strip()
+        lat = data.get('lat')
+        lon = data.get('lon')
+        try: lat = float(lat) if lat is not None else None
+        except: lat = None
+        try: lon = float(lon) if lon is not None else None
+        except: lon = None
         bg            = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
 
         store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
         if store:
             db_execute(
-                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=? WHERE admin_id=?",
-                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, admin_id)
+                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=? WHERE admin_id=?",
+                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, admin_id)
             )
             logger.info(f"Store updated: admin_id={admin_id} name={name}")
         else:
             db_execute(
-                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend)
+                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon)
             )
             logger.info(f"Store created: admin_id={admin_id} name={name}")
 
@@ -1070,6 +1125,23 @@ async def handle_delete_product(request):
     if store and p_id:
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
+
+
+async def handle_user_region(request):
+    """Save user's region preference."""
+    try:
+        data = await request.json()
+        uid = data.get('user_id')
+        region = (data.get('region') or '').strip()
+        if not uid:
+            return web.json_response({"error": "user_id required"}, status=400)
+        uid = int(uid)
+        # Try update; if user doesn't exist, ignore (region in localStorage is enough)
+        db_execute("UPDATE users SET region=? WHERE user_id=?", (region, uid))
+        return web.json_response({"status": "ok", "region": region})
+    except Exception as e:
+        logger.exception(f"handle_user_region: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def handle_orders(request):
@@ -1819,6 +1891,7 @@ async def main():
     app.router.add_post('/api/store', handle_update_store)
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
+    app.router.add_post('/api/user_region', handle_user_region)
     app.router.add_get('/api/orders', handle_orders)
     app.router.add_get('/api/stats', handle_stats)
     app.router.add_post('/api/order_status', handle_order_status)
