@@ -3,285 +3,730 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Lazzat Admin</title>
+    <title>Admin Panel</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
-            --primary: #00000b; --on-primary: #ffffff; --primary-container: #1a1a2e;
-            --secondary: #af2b3e; --on-secondary: #ffffff; --secondary-fixed: #ffdada;
+            --primary: #00000b; --primary-container: #1a1a2e;
+            --secondary: #af2b3e; --secondary-fixed: #ffdada;
             --surface: #fcf8fa; --on-surface: #1c1b1d; --on-surface-variant: #47464c;
-            --surface-container: #f1edef; --surface-container-low: #f6f2f4;
-            --surface-container-highest: #e5e1e3; --outline-variant: #c8c5cd;
+            --surface-container-low: #f6f2f4; --outline-variant: #c8c5cd;
             --error: #ba1a1a; --error-container: #ffdad6;
+            --nav-h: 68px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-        body { font-family: 'Inter', -apple-system, sans-serif; background: var(--surface); color: var(--on-surface); padding-bottom: 100px; }
-        .page { display: none; animation: fadeIn 0.35s ease; }
-        .page.active { display: block; }
+        body { font-family: -apple-system, 'Inter', sans-serif; background: var(--surface); color: var(--on-surface); overscroll-behavior: none; }
 
-        @keyframes fadeIn { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
+        .page { display: none; }
+        .page.active { display: block; animation: fadeIn 0.25s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-        @keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
 
-        /* Header */
-        .header { position: fixed; top: 0; width: 100%; z-index: 50; background: var(--surface); border-bottom: 1px solid var(--outline-variant); display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; }
-        .header h1 { font-size: 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-        .header h1 img { width: 32px; height: 32px; border-radius: 8px; }
-        .header-actions { display: flex; gap: 8px; align-items: center; }
-        .bell-btn { padding: 8px; border-radius: 50%; border: none; background: transparent; cursor: pointer; position: relative; }
-        .bell-dot { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; background: var(--secondary); border-radius: 50%; border: 2px solid var(--surface); }
-        .avatar { width: 36px; height: 36px; border-radius: 50%; border: 2px solid var(--outline-variant); overflow: hidden; }
-        .avatar img { width: 100%; height: 100%; object-fit: cover; }
+        /* ── HEADER ── */
+        .header {
+            position: fixed; top: 0; width: 100%; z-index: 100;
+            background: var(--surface); border-bottom: 1px solid var(--outline-variant);
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 16px; height: 58px;
+        }
+        .header h1 { font-size: 19px; font-weight: 700; }
+        .icon-btn { background: none; border: none; cursor: pointer; padding: 8px; position: relative; border-radius: 50%; }
+        .bell-dot { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; background: var(--secondary); border-radius: 50%; border: 2px solid var(--surface); }
 
-        /* Bottom Nav */
-        .bottom-nav { position: fixed; bottom: 0; width: 100%; z-index: 50; background: var(--primary-container); display: flex; justify-content: space-around; padding: 8px 4px 18px; border-radius: 16px 16px 0 0; }
-        .nav-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.5); background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 12px; transition: 0.2s; }
-        .nav-btn.active { color: white; background: var(--secondary); }
-        .nav-btn svg { width: 20px; height: 20px; }
+        /* ── SCROLLABLE CONTENT ── */
+        .content {
+            padding-top: 58px;
+            padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 16px) + 8px);
+            min-height: 100vh;
+        }
 
-        /* Stats Cards */
-        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 8px 16px; }
-        .stat-card { background: white; border-radius: 16px; padding: 14px; border: 1px solid var(--outline-variant); animation: scaleIn 0.3s ease; }
-        .stat-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
-        .stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--on-surface-variant); }
-        .stat-value { font-size: 24px; font-weight: 700; margin-top: 2px; }
-        .stat-trend { font-size: 10px; font-weight: 700; margin-top: 2px; }
-        .trend-up { color: #059669; }
-        .trend-down { color: var(--error); }
+        /* ── BOTTOM NAV ── */
+        .bottom-nav {
+            position: fixed; bottom: 0; left: 0; width: 100%; z-index: 100;
+            background: var(--primary-container);
+            display: flex; justify-content: space-around;
+            padding: 8px 0 calc(8px + env(safe-area-inset-bottom, 0px));
+            border-radius: 18px 18px 0 0;
+            min-height: var(--nav-h);
+        }
+        .nav-btn {
+            display: flex; flex-direction: column; align-items: center; gap: 3px;
+            color: rgba(255,255,255,0.45); background: none; border: none;
+            cursor: pointer; padding: 6px 10px; border-radius: 12px;
+            transition: all 0.2s; min-width: 52px;
+        }
+        .nav-btn.active { color: #fff; background: var(--secondary); }
+        .nav-btn svg { width: 21px; height: 21px; stroke: currentColor; fill: none; stroke-width: 2; }
+        .nav-btn span { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; }
 
-        /* Cards */
-        .card { background: white; border-radius: 16px; padding: 16px; border: 1px solid var(--outline-variant); margin: 8px 16px; animation: scaleIn 0.3s ease; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .card-title { font-size: 16px; font-weight: 700; }
+        /* ── STATS ── */
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 16px 6px; }
+        .stat-card { background: #fff; border-radius: 16px; padding: 13px; border: 1px solid var(--outline-variant); }
+        .stat-icon { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 7px; font-size: 17px; }
+        .stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--on-surface-variant); }
+        .stat-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+        .stat-trend { font-size: 10px; font-weight: 700; margin-top: 1px; }
+        .trend-up { color: #059669; } .trend-down { color: var(--error); }
 
-        /* Quick Actions */
-        .quick-actions { display: flex; flex-direction: column; gap: 8px; padding: 0 16px; }
-        .action-btn { width: 100%; padding: 14px; border-radius: 12px; border: none; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: 0.2s; font-size: 14px; }
-        .action-btn:active { transform: scale(0.97); }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-outline { background: white; border: 1px solid var(--outline-variant); }
+        /* ── CARD ── */
+        .card { background: #fff; border-radius: 16px; padding: 15px; border: 1px solid var(--outline-variant); margin: 8px 16px; }
+        .card-title { font-size: 14px; font-weight: 700; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
 
-        /* Chips */
-        .chips { display: flex; gap: 8px; overflow-x: auto; padding: 8px 16px; scrollbar-width: none; }
+        /* ── BUTTONS ── */
+        .quick-actions { display: flex; flex-direction: column; gap: 8px; padding: 6px 16px; }
+        .action-btn {
+            width: 100%; padding: 13px 16px; border-radius: 12px; border: none;
+            font-weight: 600; cursor: pointer; display: flex; align-items: center;
+            gap: 10px; font-size: 14px; font-family: inherit; transition: 0.18s;
+        }
+        .action-btn:active { transform: scale(0.97); opacity: 0.88; }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-secondary { background: var(--secondary); color: #fff; }
+        .btn-outline { background: #fff; border: 1px solid var(--outline-variant) !important; color: var(--on-surface); }
+        .btn-sm { padding: 8px 14px; font-size: 12px; border-radius: 10px; width: auto; }
+
+        /* ── CHIPS ── */
+        .chips { display: flex; gap: 8px; overflow-x: auto; padding: 10px 16px; scrollbar-width: none; }
         .chips::-webkit-scrollbar { display: none; }
-        .chip { padding: 8px 16px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; border: 1px solid var(--outline-variant); background: white; cursor: pointer; transition: 0.2s; }
-        .chip.active { background: var(--secondary); color: white; border-color: var(--secondary); }
+        .chip { padding: 7px 14px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; border: 1px solid var(--outline-variant); background: #fff; cursor: pointer; transition: 0.18s; font-family: inherit; }
+        .chip.active { background: var(--secondary); color: #fff; border-color: var(--secondary); }
 
-        /* Product Card */
-        .product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 8px 16px; }
-        .product-card { background: white; border-radius: 16px; overflow: hidden; border: 1px solid var(--outline-variant); animation: scaleIn 0.3s ease; }
-        .product-img { width: 100%; height: 120px; object-fit: cover; }
-        .product-body { padding: 10px 12px; }
-        .product-name { font-size: 13px; font-weight: 700; }
+        /* ── PRODUCT GRID ── */
+        .product-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 6px 16px; }
+        .product-card { background: #fff; border-radius: 16px; overflow: hidden; border: 1px solid var(--outline-variant); }
+        .product-img { width: 100%; height: 108px; object-fit: cover; display: block; }
+        .product-body { padding: 9px 11px; }
+        .product-name { font-size: 12px; font-weight: 700; line-height: 1.3; }
         .product-meta { font-size: 10px; color: var(--on-surface-variant); margin-top: 2px; }
-        .product-price { font-size: 14px; font-weight: 700; color: var(--secondary); margin-top: 4px; }
-        .product-status { display: inline-block; padding: 3px 8px; border-radius: 8px; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-top: 4px; }
+        .product-price { font-size: 13px; font-weight: 700; color: var(--secondary); margin-top: 3px; }
+        .product-status { display: inline-block; padding: 2px 7px; border-radius: 7px; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-top: 3px; }
         .status-sotuvda { background: #d1fae5; color: #065f46; }
         .status-tugagan { background: var(--error-container); color: var(--error); }
+        .product-actions { display: flex; gap: 5px; padding: 7px 10px; border-top: 1px solid var(--outline-variant); }
+        .pa-btn { flex: 1; padding: 6px; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; }
+        .pa-edit { background: #e2e0fc; color: #3730a3; }
+        .pa-del { background: var(--error-container); color: var(--error); }
 
-        /* Order Card */
-        .order-card { background: white; border-radius: 16px; padding: 14px; border: 1px solid var(--outline-variant); margin: 8px 16px; border-left: 4px solid var(--secondary); animation: scaleIn 0.3s ease; }
-        .order-id { font-size: 12px; font-weight: 700; color: var(--secondary); }
-        .order-customer { font-size: 16px; font-weight: 700; margin-top: 2px; }
-        .order-info { font-size: 11px; color: var(--on-surface-variant); margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-        .order-amount { font-size: 18px; font-weight: 700; margin-top: 8px; }
+        /* ── SECTION HEADER ── */
+        .sec-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 4px; }
+        .sec-title { font-size: 15px; font-weight: 700; }
+        .sec-btn { padding: 6px 12px; border-radius: 8px; border: none; background: var(--secondary); color: #fff; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; }
 
-        /* Page content padding */
-        .content { padding-top: 70px; }
+        /* ── SHOP CARD ── */
+        .shop-card { background: #fff; border-radius: 16px; padding: 13px; border: 1px solid var(--outline-variant); margin: 6px 16px; display: flex; align-items: center; gap: 11px; }
+        .shop-icon { width: 46px; height: 46px; border-radius: 12px; background: var(--surface-container-low); display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+        .shop-info { flex: 1; min-width: 0; }
+        .shop-name { font-size: 14px; font-weight: 700; }
+        .shop-meta { font-size: 11px; color: var(--on-surface-variant); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .shop-badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 9px; font-weight: 700; margin-top: 3px; }
+        .shop-actions { display: flex; gap: 5px; flex-shrink: 0; }
+        .s-btn { width: 34px; height: 34px; border-radius: 9px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; transition: 0.18s; }
 
-        /* Bar chart */
-        .bar-chart { display: flex; align-items: flex-end; justify-content: space-between; height: 120px; padding: 0 8px; }
-        .bar { width: 28px; border-radius: 6px 6px 0 0; transition: 0.3s; }
-        .bar-label { text-align: center; font-size: 9px; color: var(--on-surface-variant); margin-top: 4px; }
+        /* ── ORDER CARD ── */
+        .order-card { background: #fff; border-radius: 16px; padding: 13px; border: 1px solid var(--outline-variant); margin: 6px 16px; border-left: 4px solid var(--secondary); cursor: pointer; transition: 0.18s; }
+        .order-card:active { transform: scale(0.98); }
+        .order-id { font-size: 11px; font-weight: 700; color: var(--secondary); }
+        .order-customer { font-size: 15px; font-weight: 700; margin-top: 2px; }
+        .order-info { font-size: 11px; color: var(--on-surface-variant); margin-top: 3px; }
+        .order-amount { font-size: 16px; font-weight: 700; margin-top: 7px; }
+        .order-badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 700; }
 
-        /* Settings form */
-        .form-group { margin-bottom: 14px; }
-        .form-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--on-surface-variant); margin-bottom: 4px; display: block; }
-        .form-input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--outline-variant); font-size: 14px; background: var(--surface-container-low); }
-        .toggle { width: 44px; height: 24px; border-radius: 12px; background: var(--outline-variant); cursor: pointer; position: relative; transition: 0.2s; border: none; }
+        /* ── BAR CHART ── */
+        .bar-chart { display: flex; align-items: flex-end; justify-content: space-between; height: 96px; gap: 4px; padding: 0 4px; }
+        .bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; height: 100%; justify-content: flex-end; }
+        .bar { width: 100%; border-radius: 5px 5px 0 0; transition: 0.3s; min-height: 4px; }
+        .bar-lbl { font-size: 9px; color: var(--on-surface-variant); font-weight: 600; }
+
+        /* ── FORM ── */
+        .form-group { margin-bottom: 13px; }
+        .form-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--on-surface-variant); margin-bottom: 5px; display: block; }
+        .form-input, .form-select { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--outline-variant); font-size: 14px; background: var(--surface-container-low); font-family: inherit; outline: none; transition: 0.18s; }
+        .form-input:focus, .form-select:focus { border-color: var(--secondary); }
+        .form-select { -webkit-appearance: none; appearance: none; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .toggle { width: 44px; height: 24px; border-radius: 12px; background: var(--outline-variant); cursor: pointer; position: relative; transition: 0.2s; border: none; flex-shrink: 0; }
         .toggle.on { background: var(--secondary); }
-        .toggle::after { content: ''; width: 20px; height: 20px; border-radius: 50%; background: white; position: absolute; top: 2px; left: 2px; transition: 0.2s; }
+        .toggle::after { content: ''; width: 20px; height: 20px; border-radius: 50%; background: #fff; position: absolute; top: 2px; left: 2px; transition: 0.2s; }
         .toggle.on::after { left: 22px; }
+
+        /* ── MODAL ── */
+        .modal-overlay { position: fixed; inset: 0; z-index: 200; display: flex; flex-direction: column; justify-content: flex-end; background: rgba(0,0,0,0.45); backdrop-filter: blur(3px); }
+        .modal-overlay.hidden { display: none; }
+        .modal-sheet { background: var(--surface); border-radius: 24px 24px 0 0; max-height: 92vh; overflow-y: auto; animation: slideUp 0.3s ease; padding-bottom: env(safe-area-inset-bottom, 0px); }
+        .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 18px 14px; border-bottom: 1px solid var(--outline-variant); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+        .modal-title { font-size: 17px; font-weight: 700; }
+        .modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--on-surface-variant); padding: 4px 8px; border-radius: 8px; }
+        .modal-body { padding: 18px; }
+        .modal-foot { padding: 14px 18px; border-top: 1px solid var(--outline-variant); }
+
+        /* ── IMG UPLOAD ── */
+        .img-upload { width: 100%; height: 120px; border-radius: 12px; border: 2px dashed var(--outline-variant); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; cursor: pointer; background: var(--surface-container-low); font-size: 12px; color: var(--on-surface-variant); font-weight: 600; transition: 0.18s; margin-bottom: 14px; }
+        .img-upload:active { border-color: var(--secondary); }
+        #productImgPreview { display: none; width: 100%; height: 120px; object-fit: cover; border-radius: 12px; margin-bottom: 14px; }
+
+        /* ── FAB ── */
+        .fab { position: fixed; right: 18px; bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 14px); width: 54px; height: 54px; border-radius: 50%; background: var(--secondary); color: #fff; border: none; font-size: 26px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 18px rgba(175,43,62,0.38); z-index: 50; transition: 0.18s; }
+        .fab:active { transform: scale(0.91); }
+        .fab.hidden { display: none; }
+
+        /* ── ANALYTICS ── */
+        .progress-row { margin-bottom: 10px; }
+        .progress-bar { height: 8px; background: var(--surface-container-low); border-radius: 6px; margin-top: 4px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--secondary); border-radius: 6px; transition: width 0.5s ease; }
+
+        /* ── EMPTY ── */
+        .empty { text-align: center; padding: 40px 20px; color: var(--on-surface-variant); }
+        .empty-icon { font-size: 44px; margin-bottom: 10px; }
+        .empty p { font-size: 14px; }
     </style>
 </head>
 <body>
 
-    <!-- HEADER -->
-    <header class="header">
-        <h1>⚙️ Lazzat Admin</h1>
-        <div class="header-actions">
-            <button class="bell-btn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg><span class="bell-dot"></span></button>
-            <div class="avatar"><img src="https://images.unsplash.com/photo-1599566150163-29194dcaad36?w=80&q=80" alt="Admin"></div>
-        </div>
-    </header>
+<!-- HEADER -->
+<header class="header">
+    <h1>⚙️ Admin Panel</h1>
+    <div style="display:flex;gap:4px;align-items:center;">
+        <button class="icon-btn" onclick="showNotifs()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+            <span class="bell-dot" id="bellDot"></span>
+        </button>
+    </div>
+</header>
 
-    <!-- CONTENT -->
-    <div class="content">
-        <!-- DASHBOARD -->
-        <div class="page active" id="page-dashboard">
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-icon" style="background:#e2e0fc;">📦</div><div class="stat-label">Bugungi buyurtmalar</div><div class="stat-value">142</div><div class="stat-trend trend-up">+12%</div></div>
-                <div class="stat-card"><div class="stat-icon" style="background:#ffdada;">💰</div><div class="stat-label">Daromad</div><div class="stat-value">14.2M</div><div class="stat-trend trend-up">+8.4%</div></div>
-                <div class="stat-card"><div class="stat-icon" style="background:#d1fae5;">🚗</div><div class="stat-label">Faol kuryerlar</div><div class="stat-value">24</div></div>
-                <div class="stat-card"><div class="stat-icon" style="background:#fef3c7;">⭐</div><div class="stat-label">Reyting</div><div class="stat-value">4.85</div></div>
-            </div>
+<!-- CONTENT -->
+<div class="content" id="mainContent">
 
-            <div class="card">
-                <div class="card-header"><span class="card-title">Haftalik daromad</span></div>
-                <div class="bar-chart" id="barChart"></div>
-            </div>
-
-            <div class="quick-actions" style="margin-top:12px;">
-                <button class="action-btn btn-primary" onclick="switchPage('products')">➕ Mahsulot qo'shish</button>
-                <button class="action-btn btn-outline" onclick="switchPage('products')">📝 Menyuni tahrirlash</button>
-                <button class="action-btn btn-outline">📢 Xabar yuborish</button>
-            </div>
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-icon" style="background:#e2e0fc;">📦</div><div class="stat-label">Buyurtmalar</div><div class="stat-value" id="d-orders">0</div><div class="stat-trend trend-up">+12%</div></div>
+            <div class="stat-card"><div class="stat-icon" style="background:#ffdada;">💰</div><div class="stat-label">Daromad</div><div class="stat-value" id="d-revenue">0</div><div class="stat-trend trend-up">+8.4%</div></div>
+            <div class="stat-card"><div class="stat-icon" style="background:#d1fae5;">🏪</div><div class="stat-label">Do'konlar</div><div class="stat-value" id="d-shops">0</div></div>
+            <div class="stat-card"><div class="stat-icon" style="background:#fef3c7;">🍽️</div><div class="stat-label">Mahsulotlar</div><div class="stat-value" id="d-products">0</div></div>
         </div>
 
-        <!-- PRODUCTS -->
-        <div class="page" id="page-products">
-            <div class="chips" id="productChips">
-                <button class="chip active" onclick="filterProducts('all', this)">Barchasi</button>
-                <button class="chip" onclick="filterProducts('Pitsalar', this)">Pitsalar</button>
-                <button class="chip" onclick="filterProducts('Burgerlar', this)">Burgerlar</button>
-                <button class="chip" onclick="filterProducts('Ichimliklar', this)">Ichimliklar</button>
-            </div>
-            <div class="product-grid" id="productGrid"></div>
+        <div class="card">
+            <div class="card-header"><span class="card-title">📊 Haftalik daromad</span></div>
+            <div class="bar-chart" id="barChart"></div>
         </div>
 
-        <!-- ORDERS -->
-        <div class="page" id="page-orders">
-            <div class="chips" id="orderChips">
-                <button class="chip active" onclick="filterOrders('all', this)">Barchasi</button>
-                <button class="chip" onclick="filterOrders('yangi', this)">Yangi</button>
-                <button class="chip" onclick="filterOrders('jarayonda', this)">Jarayonda</button>
-                <button class="chip" onclick="filterOrders('yetkazilmoqda', this)">Yetkazilmoqda</button>
-            </div>
-            <div id="orderList"></div>
-        </div>
-
-        <!-- ANALYTICS -->
-        <div class="page" id="page-analytics">
-            <div class="card"><div class="card-title">Analitika</div><p style="color:var(--on-surface-variant);margin-top:8px;">📊 To'liq hisobotlar tez orada...</p></div>
-        </div>
-
-        <!-- SETTINGS -->
-        <div class="page" id="page-settings">
-            <div class="card">
-                <div class="card-title">Asosiy ma'lumotlar</div>
-                <div class="form-group"><label class="form-label">Restoran nomi</label><input class="form-input" value="Lazzat Premium Grill"></div>
-                <div class="form-group"><label class="form-label">Manzil</label><input class="form-input" value="Toshkent, Yunusobod"></div>
-                <div class="form-group"><label class="form-label">Telefon</label><input class="form-input" value="+998 90 123 45 67"></div>
-            </div>
-            <div class="card" style="margin-top:12px;">
-                <div class="card-title">Bildirishnomalar</div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;">
-                    <span>Yangi buyurtmalar</span>
-                    <button class="toggle on" onclick="this.classList.toggle('on')"></button>
-                </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;">
-                    <span>Xabarlar</span>
-                    <button class="toggle on" onclick="this.classList.toggle('on')"></button>
-                </div>
-            </div>
+        <div class="sec-header" style="margin-top:4px;"><span class="sec-title">Tezkor amallar</span></div>
+        <div class="quick-actions">
+            <button class="action-btn btn-secondary" onclick="openAddProduct()">➕ Mahsulot qo'shish</button>
+            <button class="action-btn btn-primary" onclick="openAddShop()">🏪 Do'kon qo'shish</button>
+            <button class="action-btn btn-outline" onclick="switchPage('orders')">📋 Buyurtmalarni ko'rish</button>
+            <button class="action-btn btn-outline" onclick="switchPage('analytics')">📈 Hisobotlar</button>
         </div>
     </div>
 
-    <!-- BOTTOM NAV -->
-    <nav class="bottom-nav">
-        <button class="nav-btn active" id="nav-dashboard" onclick="switchPage('dashboard')">📊 Asosiy</button>
-        <button class="nav-btn" id="nav-products" onclick="switchPage('products')">🍕 Maxsulotlar</button>
-        <button class="nav-btn" id="nav-orders" onclick="switchPage('orders')">📋 Buyurtmalar</button>
-        <button class="nav-btn" id="nav-analytics" onclick="switchPage('analytics')">📈 Analitika</button>
-        <button class="nav-btn" id="nav-settings" onclick="switchPage('settings')">⚙️ Sozlamalar</button>
-    </nav>
+    <!-- PRODUCTS -->
+    <div class="page" id="page-products">
+        <div class="chips" id="productChips">
+            <button class="chip active" onclick="filterProducts('all',this)">Barchasi</button>
+            <button class="chip" onclick="filterProducts('Pitsalar',this)">Pitsalar</button>
+            <button class="chip" onclick="filterProducts('Burgerlar',this)">Burgerlar</button>
+            <button class="chip" onclick="filterProducts('Ichimliklar',this)">Ichimliklar</button>
+            <button class="chip" onclick="filterProducts('Shirinliklar',this)">Shirinliklar</button>
+        </div>
+        <div class="product-grid" id="productGrid"></div>
+    </div>
 
-    <script>
-        const PRODUCTS = [
-            { id:'1', name:'Margarita Pitsa', category:'Pitsalar', weight:'450g', price:65000, status:'sotuvda', image:'https://images.unsplash.com/photo-1574071318508-1cdbad80ad50?w=400&q=80' },
-            { id:'2', name:'Double Burger', category:'Burgerlar', weight:'380g', price:48000, status:'sotuvda', image:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400&q=80' },
-            { id:'3', name:'Klassik Limonad', category:'Ichimliklar', weight:'0.5L', price:22000, status:'tugagan', image:'https://images.unsplash.com/photo-1621506289937-a8e4df240d0b?w=400&q=80' },
-            { id:'4', name:'Pepperoni Pitsa', category:'Pitsalar', weight:'480g', price:72000, status:'sotuvda', image:'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400&q=80' },
-        ];
+    <!-- SHOPS -->
+    <div class="page" id="page-shops">
+        <div class="sec-header">
+            <span class="sec-title">Do'konlar ro'yxati</span>
+            <button class="sec-btn" onclick="openAddShop()">+ Qo'shish</button>
+        </div>
+        <div id="shopsList"></div>
+    </div>
 
-        const ORDERS = [
-            { id:'#A8492', customer:'Alisher Usmonov', phone:'+998 90 123 45 67', time:'12:45', amount:113000, status:'yangi' },
-            { id:'#A8495', customer:'Malika Ergasheva', phone:'+998 99 987 65 43', time:'13:10', amount:45000, status:'jarayonda' },
-            { id:'#A8496', customer:'Javohir Karimov', phone:'+998 93 456 78 90', time:'12:55', amount:185000, status:'yetkazilmoqda' },
-        ];
+    <!-- ORDERS -->
+    <div class="page" id="page-orders">
+        <div class="chips" id="orderChips">
+            <button class="chip active" onclick="filterOrders('all',this)">Barchasi</button>
+            <button class="chip" onclick="filterOrders('yangi',this)">Yangi</button>
+            <button class="chip" onclick="filterOrders('jarayonda',this)">Jarayonda</button>
+            <button class="chip" onclick="filterOrders('yetkazilmoqda',this)">Yetkazilmoqda</button>
+        </div>
+        <div id="orderList"></div>
+    </div>
 
-        let currentFilter = 'all';
-        let currentOrderFilter = 'all';
+    <!-- ANALYTICS -->
+    <div class="page" id="page-analytics">
+        <div class="card">
+            <div class="card-title" style="margin-bottom:14px;">📈 Oylik ko'rsatkichlar</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div style="text-align:center;padding:14px;background:var(--surface-container-low);border-radius:12px;"><div style="font-size:22px;font-weight:700;color:var(--secondary);" id="a-orders">0</div><div style="font-size:10px;color:var(--on-surface-variant);margin-top:3px;font-weight:600;">Jami buyurtmalar</div></div>
+                <div style="text-align:center;padding:14px;background:var(--surface-container-low);border-radius:12px;"><div style="font-size:22px;font-weight:700;color:#059669;" id="a-revenue">0</div><div style="font-size:10px;color:var(--on-surface-variant);margin-top:3px;font-weight:600;">Jami daromad</div></div>
+                <div style="text-align:center;padding:14px;background:var(--surface-container-low);border-radius:12px;"><div style="font-size:22px;font-weight:700;color:#f59e0b;">4.85</div><div style="font-size:10px;color:var(--on-surface-variant);margin-top:3px;font-weight:600;">O'rtacha reyting</div></div>
+                <div style="text-align:center;padding:14px;background:var(--surface-container-low);border-radius:12px;"><div style="font-size:22px;font-weight:700;color:#3730a3;">89%</div><div style="font-size:10px;color:var(--on-surface-variant);margin-top:3px;font-weight:600;">Muvaffaqiyat</div></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title" style="margin-bottom:12px;">🍽️ Kategoriyalar</div>
+            <div id="catChart"></div>
+        </div>
+    </div>
 
-        function switchPage(page) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.getElementById('page-' + page).classList.add('active');
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById('nav-' + page).classList.add('active');
-            
-            if (page === 'dashboard') renderChart();
-            if (page === 'products') renderProducts();
-            if (page === 'orders') renderOrders();
-        }
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+        <div class="card">
+            <div class="card-title" style="margin-bottom:14px;">Asosiy ma'lumotlar</div>
+            <div class="form-group"><label class="form-label">Restoran nomi</label><input class="form-input" id="sName" value="Lazzat Premium Grill"></div>
+            <div class="form-group"><label class="form-label">Manzil</label><input class="form-input" id="sAddr" value="Toshkent, Yunusobod"></div>
+            <div class="form-group"><label class="form-label">Telefon</label><input class="form-input" id="sPhone" value="+998 90 123 45 67"></div>
+            <button class="action-btn btn-secondary" style="margin-top:4px;" onclick="saveSettings()">💾 Saqlash</button>
+        </div>
+        <div class="card">
+            <div class="card-title" style="margin-bottom:12px;">Bildirishnomalar</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--outline-variant);"><span style="font-size:14px;">Yangi buyurtmalar</span><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;"><span style="font-size:14px;">Xabarlar</span><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+        </div>
+    </div>
+</div>
 
-        function renderChart() {
-            const data = [75, 50, 80, 65, 100, 60, 90];
-            const days = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sh', 'Ya'];
-            document.getElementById('barChart').innerHTML = data.map((v, i) => `
-                <div style="text-align:center;">
-                    <div class="bar" style="height:${v}%;background:${i===4?'var(--secondary)':'#e2e0fc'}"></div>
-                    <div class="bar-label">${days[i]}</div>
-                </div>
-            `).join('');
-        }
+<!-- FAB -->
+<button class="fab hidden" id="fab" onclick="onFab()">+</button>
 
-        function renderProducts() {
-            let filtered = PRODUCTS;
-            if (currentFilter !== 'all') filtered = PRODUCTS.filter(p => p.category === currentFilter);
-            document.getElementById('productGrid').innerHTML = filtered.map(p => `
-                <div class="product-card">
-                    <img class="product-img" src="${p.image}" alt="${p.name}">
-                    <div class="product-body">
-                        <div class="product-name">${p.name}</div>
-                        <div class="product-meta">${p.category} • ${p.weight}</div>
-                        <div class="product-price">${p.price.toLocaleString()} so'm</div>
-                        <span class="product-status ${p.status==='sotuvda'?'status-sotuvda':'status-tugagan'}">${p.status}</span>
-                    </div>
-                </div>
-            `).join('');
-        }
+<!-- BOTTOM NAV -->
+<nav class="bottom-nav">
+    <button class="nav-btn active" id="nav-dashboard" onclick="switchPage('dashboard')">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>Asosiy</span>
+    </button>
+    <button class="nav-btn" id="nav-products" onclick="switchPage('products')">
+        <svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        <span>Mahsulot</span>
+    </button>
+    <button class="nav-btn" id="nav-shops" onclick="switchPage('shops')">
+        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span>Do'konlar</span>
+    </button>
+    <button class="nav-btn" id="nav-orders" onclick="switchPage('orders')">
+        <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        <span>Buyurtma</span>
+    </button>
+    <button class="nav-btn" id="nav-settings" onclick="switchPage('settings')">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M20 12h2M2 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41M12 20v2M12 2v2"/></svg>
+        <span>Sozlama</span>
+    </button>
+</nav>
 
-        function filterProducts(cat, btn) {
-            currentFilter = cat;
-            document.querySelectorAll('#productChips .chip').forEach(c => c.classList.remove('active'));
-            btn.classList.add('active');
-            renderProducts();
-        }
+<!-- MODAL: ADD/EDIT PRODUCT -->
+<div class="modal-overlay hidden" id="modalProduct">
+    <div class="modal-sheet">
+        <div class="modal-head">
+            <span class="modal-title" id="modalProductTitle">➕ Mahsulot qo'shish</span>
+            <button class="modal-close" onclick="closeModal('modalProduct')">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="img-upload" id="imgUploadArea" onclick="document.getElementById('fileInput').click()">
+                <span style="font-size:28px;">📷</span>
+                <span>Rasm yuklash (ixtiyoriy)</span>
+            </div>
+            <img id="productImgPreview" alt="preview">
+            <input type="file" id="fileInput" accept="image/*" style="display:none;" onchange="previewImg(this)">
+            <div class="form-group"><label class="form-label">Mahsulot nomi *</label><input class="form-input" id="fPName" placeholder="Margarita Pitsa"></div>
+            <div class="form-group"><label class="form-label">Kategoriya *</label>
+                <select class="form-select" id="fPCat">
+                    <option value="">— Tanlang —</option>
+                    <option value="Pitsalar">Pitsalar</option>
+                    <option value="Burgerlar">Burgerlar</option>
+                    <option value="Ichimliklar">Ichimliklar</option>
+                    <option value="Shirinliklar">Shirinliklar</option>
+                    <option value="Salatlar">Salatlar</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label class="form-label">Narxi (so'm) *</label><input class="form-input" id="fPPrice" type="number" placeholder="65000"></div>
+                <div class="form-group"><label class="form-label">Og'irlik</label><input class="form-input" id="fPWeight" placeholder="450g"></div>
+            </div>
+            <div class="form-group"><label class="form-label">Holati</label>
+                <select class="form-select" id="fPStatus"><option value="sotuvda">Sotuvda</option><option value="tugagan">Tugagan</option></select>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="action-btn btn-secondary" onclick="saveProduct()" style="justify-content:center;">💾 Saqlash</button>
+        </div>
+    </div>
+</div>
 
-        function renderOrders() {
-            let filtered = ORDERS;
-            if (currentOrderFilter !== 'all') filtered = ORDERS.filter(o => o.status === currentOrderFilter);
-            document.getElementById('orderList').innerHTML = filtered.map(o => `
-                <div class="order-card" style="border-left-color:${o.status==='yangi'?'var(--secondary)':o.status==='jarayonda'?'#f59e0b':'#059669'}">
-                    <div class="order-id">${o.id} • ${o.time}</div>
-                    <div class="order-customer">${o.customer}</div>
-                    <div class="order-info">📞 ${o.phone}</div>
-                    <div class="order-amount">${o.amount.toLocaleString()} UZS</div>
-                </div>
-            `).join('');
-        }
+<!-- MODAL: ADD/EDIT SHOP -->
+<div class="modal-overlay hidden" id="modalShop">
+    <div class="modal-sheet">
+        <div class="modal-head">
+            <span class="modal-title" id="modalShopTitle">🏪 Do'kon qo'shish</span>
+            <button class="modal-close" onclick="closeModal('modalShop')">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group"><label class="form-label">Do'kon nomi *</label><input class="form-input" id="fSName" placeholder="Lazzat Chilonzor"></div>
+            <div class="form-group"><label class="form-label">Manzil *</label><input class="form-input" id="fSAddr" placeholder="Chilonzor, 12-mavze"></div>
+            <div class="form-group"><label class="form-label">Telefon</label><input class="form-input" id="fSPhone" type="tel" placeholder="+998 90 000 00 00"></div>
+            <div class="form-group"><label class="form-label">Ish vaqti</label><input class="form-input" id="fSHours" placeholder="09:00 - 23:00"></div>
+            <div class="form-group"><label class="form-label">Holati</label>
+                <select class="form-select" id="fSStatus"><option value="ochiq">Ochiq</option><option value="yopiq">Yopiq</option></select>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="action-btn btn-secondary" onclick="saveShop()" style="justify-content:center;">💾 Saqlash</button>
+        </div>
+    </div>
+</div>
 
-        function filterOrders(status, btn) {
-            currentOrderFilter = status;
-            document.querySelectorAll('#orderChips .chip').forEach(c => c.classList.remove('active'));
-            btn.classList.add('active');
-            renderOrders();
-        }
+<!-- MODAL: ORDER DETAIL -->
+<div class="modal-overlay hidden" id="modalOrder">
+    <div class="modal-sheet">
+        <div class="modal-head">
+            <span class="modal-title">Buyurtma tafsiloti</span>
+            <button class="modal-close" onclick="closeModal('modalOrder')">✕</button>
+        </div>
+        <div class="modal-body" id="orderDetailBody"></div>
+        <div class="modal-foot" style="display:flex;gap:8px;">
+            <button class="action-btn btn-outline" style="flex:1;justify-content:center;" onclick="closeModal('modalOrder')">Yopish</button>
+            <button class="action-btn btn-secondary" style="flex:1;justify-content:center;" id="orderAdvBtn" onclick="advanceOrder()">Keyingi ›</button>
+        </div>
+    </div>
+</div>
 
-        // INIT
-        renderChart();
-        renderProducts();
-        renderOrders();
-    </script>
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.expand(); tg.ready(); }
+
+// ── DATA ──
+let PRODUCTS = [
+    { id:'p1', name:'Margarita Pitsa', category:'Pitsalar', weight:'450g', price:65000, status:'sotuvda', image:'https://images.unsplash.com/photo-1574071318508-1cdbad80ad50?w=400&q=80' },
+    { id:'p2', name:'Double Burger',   category:'Burgerlar', weight:'380g', price:48000, status:'sotuvda', image:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400&q=80' },
+    { id:'p3', name:'Klassik Limonad', category:'Ichimliklar', weight:'0.5L', price:22000, status:'tugagan', image:'https://images.unsplash.com/photo-1621506289937-a8e4df240d0b?w=400&q=80' },
+    { id:'p4', name:'Pepperoni Pitsa', category:'Pitsalar', weight:'480g', price:72000, status:'sotuvda', image:'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400&q=80' },
+];
+let SHOPS = [
+    { id:'s1', name:'Lazzat Yunusobod', address:'Yunusobod, 14-mavze', phone:'+998 90 123 45 67', hours:'10:00 - 23:00', status:'ochiq' },
+    { id:'s2', name:'Lazzat Chilonzor', address:'Chilonzor, 3-mavze',  phone:'+998 90 765 43 21', hours:'09:00 - 22:00', status:'ochiq' },
+];
+let ORDERS = [
+    { id:'#A8492', customer:'Alisher Usmonov',  phone:'+998 90 123 45 67', time:'12:45', amount:113000, status:'yangi',        items:'Margarita Pitsa x2, Limonad x1' },
+    { id:'#A8495', customer:'Malika Ergasheva',  phone:'+998 99 987 65 43', time:'13:10', amount:45000,  status:'jarayonda',    items:'Double Burger x1' },
+    { id:'#A8496', customer:'Javohir Karimov',   phone:'+998 93 456 78 90', time:'12:55', amount:185000, status:'yetkazilmoqda',items:'Pepperoni Pitsa x2, Burger x1' },
+];
+
+const STATUS_CYCLE  = ['yangi','jarayonda','yetkazilmoqda','yakunlandi'];
+const STATUS_COLOR  = { yangi:'var(--secondary)', jarayonda:'#f59e0b', yetkazilmoqda:'#059669', yakunlandi:'#6b7280' };
+const STATUS_LABEL  = { yangi:'Yangi', jarayonda:'Jarayonda', yetkazilmoqda:'Yetkazilmoqda', yakunlandi:'Yakunlandi' };
+
+let pFilter = 'all', oFilter = 'all', curPage = 'dashboard';
+let editPId = null, editSId = null, activeOId = null;
+
+// ── NAVIGATION ──
+function switchPage(page) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+    const pg = document.getElementById('page-' + page);
+    const nb = document.getElementById('nav-' + page);
+    if (pg) pg.classList.add('active');
+    if (nb) nb.classList.add('active');
+
+    curPage = page;
+    document.getElementById('mainContent').scrollTop = 0;
+
+    const fab = document.getElementById('fab');
+    fab.classList.toggle('hidden', page !== 'products' && page !== 'shops');
+
+    if (page === 'dashboard') renderDashboard();
+    if (page === 'products') renderProducts();
+    if (page === 'shops')    renderShops();
+    if (page === 'orders')   renderOrders();
+    if (page === 'analytics') renderAnalytics();
+}
+
+function onFab() {
+    if (curPage === 'products') openAddProduct();
+    else if (curPage === 'shops') openAddShop();
+}
+
+// ── DASHBOARD ──
+function renderDashboard() {
+    document.getElementById('d-orders').textContent   = ORDERS.length;
+    document.getElementById('d-shops').textContent    = SHOPS.length;
+    document.getElementById('d-products').textContent = PRODUCTS.length;
+    const rev = ORDERS.reduce((s,o) => s + o.amount, 0);
+    document.getElementById('d-revenue').textContent  = (rev / 1000000).toFixed(1) + 'M';
+    renderChart();
+}
+
+function renderChart() {
+    const data = [75,50,80,65,100,60,90], days = ['Du','Se','Ch','Pa','Ju','Sh','Ya'];
+    const max = Math.max(...data);
+    document.getElementById('barChart').innerHTML = data.map((v,i) => `
+        <div class="bar-wrap">
+            <div class="bar" style="height:${(v/max)*96}%;background:${i===4?'var(--secondary)':'#e2e0fc'};"></div>
+            <div class="bar-lbl">${days[i]}</div>
+        </div>`).join('');
+}
+
+// ── PRODUCTS ──
+function renderProducts() {
+    const list = pFilter === 'all' ? PRODUCTS : PRODUCTS.filter(p => p.category === pFilter);
+    if (!list.length) {
+        document.getElementById('productGrid').innerHTML = '<div class="empty" style="grid-column:1/-1;"><div class="empty-icon">📦</div><p>Mahsulotlar yo\'q</p></div>';
+        return;
+    }
+    document.getElementById('productGrid').innerHTML = list.map(p => `
+        <div class="product-card">
+            <img class="product-img" src="${p.image||''}" alt="${p.name}" onerror="this.style.display='none'">
+            <div class="product-body">
+                <div class="product-name">${p.name}</div>
+                <div class="product-meta">${p.category}${p.weight?' • '+p.weight:''}</div>
+                <div class="product-price">${p.price.toLocaleString()} so'm</div>
+                <span class="product-status ${p.status==='sotuvda'?'status-sotuvda':'status-tugagan'}">${p.status}</span>
+            </div>
+            <div class="product-actions">
+                <button class="pa-btn pa-edit" onclick="editProduct('${p.id}')">✏️ Tahrir</button>
+                <button class="pa-btn pa-del"  onclick="deleteProduct('${p.id}')">🗑️</button>
+            </div>
+        </div>`).join('');
+}
+
+function filterProducts(cat, btn) {
+    pFilter = cat;
+    document.querySelectorAll('#productChips .chip').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    renderProducts();
+}
+
+// ── SHOPS ──
+function renderShops() {
+    const c = document.getElementById('shopsList');
+    if (!SHOPS.length) {
+        c.innerHTML = '<div class="empty"><div class="empty-icon">🏪</div><p>Do\'konlar yo\'q. Yangi do\'kon qo\'shing!</p></div>';
+        return;
+    }
+    c.innerHTML = SHOPS.map(s => `
+        <div class="shop-card">
+            <div class="shop-icon">${s.status==='ochiq'?'🏪':'🔒'}</div>
+            <div class="shop-info">
+                <div class="shop-name">${s.name}</div>
+                <div class="shop-meta">📍 ${s.address}</div>
+                ${s.hours ? `<div class="shop-meta">🕐 ${s.hours}</div>` : ''}
+                <span class="shop-badge" style="background:${s.status==='ochiq'?'#d1fae5':'#fee2e2'};color:${s.status==='ochiq'?'#065f46':'#991b1b'};">
+                    ${s.status==='ochiq'?'● Ochiq':'● Yopiq'}
+                </span>
+            </div>
+            <div class="shop-actions">
+                <button class="s-btn" style="background:#e2e0fc;color:#3730a3;" onclick="editShop('${s.id}')">✏️</button>
+                <button class="s-btn" style="background:var(--error-container);color:var(--error);" onclick="deleteShop('${s.id}')">🗑️</button>
+            </div>
+        </div>`).join('');
+}
+
+// ── ORDERS ──
+function renderOrders() {
+    const list = oFilter === 'all' ? ORDERS : ORDERS.filter(o => o.status === oFilter);
+    if (!list.length) {
+        document.getElementById('orderList').innerHTML = '<div class="empty"><div class="empty-icon">📋</div><p>Buyurtmalar yo\'q</p></div>';
+        return;
+    }
+    document.getElementById('orderList').innerHTML = list.map(o => `
+        <div class="order-card" style="border-left-color:${STATUS_COLOR[o.status]||'var(--secondary)'};" onclick="showOrder('${o.id}')">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div class="order-id">${o.id} • ${o.time}</div>
+                <span class="order-badge" style="background:${STATUS_COLOR[o.status]}22;color:${STATUS_COLOR[o.status]};">${STATUS_LABEL[o.status]||o.status}</span>
+            </div>
+            <div class="order-customer">${o.customer}</div>
+            <div class="order-info">📞 ${o.phone}</div>
+            <div class="order-amount">${o.amount.toLocaleString()} UZS</div>
+        </div>`).join('');
+}
+
+function filterOrders(s, btn) {
+    oFilter = s;
+    document.querySelectorAll('#orderChips .chip').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    renderOrders();
+}
+
+function showOrder(oid) {
+    const o = ORDERS.find(x => x.id === oid);
+    if (!o) return;
+    activeOId = oid;
+    const next = STATUS_CYCLE[STATUS_CYCLE.indexOf(o.status) + 1];
+    document.getElementById('orderDetailBody').innerHTML = `
+        <div style="background:var(--surface-container-low);border-radius:12px;padding:14px;margin-bottom:14px;">
+            <div style="font-size:11px;color:var(--on-surface-variant);">Buyurtma ID</div>
+            <div style="font-size:20px;font-weight:700;color:var(--secondary);">${o.id}</div>
+        </div>
+        <div class="form-group"><div class="form-label">Mijoz</div><div style="font-size:16px;font-weight:600;">${o.customer}</div></div>
+        <div class="form-group"><div class="form-label">Telefon</div><div style="font-size:15px;">📞 ${o.phone}</div></div>
+        <div class="form-group"><div class="form-label">Mahsulotlar</div><div style="font-size:14px;">${o.items||'—'}</div></div>
+        <div class="form-group"><div class="form-label">Jami</div><div style="font-size:22px;font-weight:700;color:var(--secondary);">${o.amount.toLocaleString()} UZS</div></div>
+        <div class="form-group"><div class="form-label">Holat</div>
+            <span class="order-badge" style="background:${STATUS_COLOR[o.status]}22;color:${STATUS_COLOR[o.status]};font-size:13px;">${STATUS_LABEL[o.status]}</span>
+        </div>`;
+    const btn = document.getElementById('orderAdvBtn');
+    if (next) { btn.style.display = ''; btn.textContent = STATUS_LABEL[next] + ' ›'; }
+    else       { btn.style.display = 'none'; }
+    openModal('modalOrder');
+}
+
+function advanceOrder() {
+    const o = ORDERS.find(x => x.id === activeOId);
+    if (!o) return;
+    const idx = STATUS_CYCLE.indexOf(o.status);
+    if (idx < STATUS_CYCLE.length - 1) { o.status = STATUS_CYCLE[idx + 1]; }
+    closeModal('modalOrder');
+    renderOrders();
+}
+
+// ── ANALYTICS ──
+function renderAnalytics() {
+    document.getElementById('a-orders').textContent  = ORDERS.length;
+    const rev = ORDERS.reduce((s,o) => s + o.amount, 0);
+    document.getElementById('a-revenue').textContent = (rev/1000000).toFixed(1) + 'M';
+
+    const cats = {};
+    PRODUCTS.forEach(p => { cats[p.category] = (cats[p.category]||0) + 1; });
+    const total = PRODUCTS.length || 1;
+    document.getElementById('catChart').innerHTML = Object.entries(cats).map(([cat, cnt]) => `
+        <div class="progress-row">
+            <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;"><span>${cat}</span><span style="color:var(--on-surface-variant);">${cnt} ta</span></div>
+            <div class="progress-bar"><div class="progress-fill" style="width:${(cnt/total*100).toFixed(0)}%;"></div></div>
+        </div>`).join('') || '<p style="color:var(--on-surface-variant);font-size:13px;">Mahsulotlar yo\'q</p>';
+}
+
+// ── PRODUCT CRUD ──
+function openAddProduct() {
+    editPId = null;
+    document.getElementById('modalProductTitle').textContent = "➕ Mahsulot qo'shish";
+    ['fPName','fPPrice','fPWeight'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('fPCat').value = '';
+    document.getElementById('fPStatus').value = 'sotuvda';
+    document.getElementById('productImgPreview').style.display = 'none';
+    document.getElementById('imgUploadArea').style.display = '';
+    openModal('modalProduct');
+}
+
+function editProduct(id) {
+    const p = PRODUCTS.find(x => x.id === id);
+    if (!p) return;
+    editPId = id;
+    document.getElementById('modalProductTitle').textContent = "✏️ Mahsulotni tahrirlash";
+    document.getElementById('fPName').value   = p.name;
+    document.getElementById('fPCat').value    = p.category;
+    document.getElementById('fPPrice').value  = p.price;
+    document.getElementById('fPWeight').value = p.weight || '';
+    document.getElementById('fPStatus').value = p.status;
+    const prev = document.getElementById('productImgPreview');
+    if (p.image) { prev.src = p.image; prev.style.display = 'block'; document.getElementById('imgUploadArea').style.display = 'none'; }
+    openModal('modalProduct');
+}
+
+function saveProduct() {
+    const name   = document.getElementById('fPName').value.trim();
+    const cat    = document.getElementById('fPCat').value;
+    const price  = parseInt(document.getElementById('fPPrice').value);
+    const weight = document.getElementById('fPWeight').value.trim();
+    const status = document.getElementById('fPStatus').value;
+    if (!name || !cat || !price) { alert("Iltimos, * maydonlarni to'ldiring!"); return; }
+
+    if (editPId) {
+        const p = PRODUCTS.find(x => x.id === editPId);
+        if (p) Object.assign(p, { name, category:cat, price, weight, status });
+    } else {
+        PRODUCTS.push({ id:'p'+Date.now(), name, category:cat, price, weight, status,
+            image:'https://images.unsplash.com/photo-1574071318508-1cdbad80ad50?w=400&q=80' });
+    }
+    closeModal('modalProduct');
+    renderProducts();
+    renderDashboard();
+}
+
+function deleteProduct(id) {
+    if (!confirm("Bu mahsulotni o'chirasizmi?")) return;
+    PRODUCTS = PRODUCTS.filter(p => p.id !== id);
+    renderProducts(); renderDashboard();
+}
+
+// ── SHOP CRUD ──
+function openAddShop() {
+    editSId = null;
+    document.getElementById('modalShopTitle').textContent = "🏪 Do'kon qo'shish";
+    ['fSName','fSAddr','fSPhone','fSHours'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('fSStatus').value = 'ochiq';
+    openModal('modalShop');
+}
+
+function editShop(id) {
+    const s = SHOPS.find(x => x.id === id);
+    if (!s) return;
+    editSId = id;
+    document.getElementById('modalShopTitle').textContent = "✏️ Do'konni tahrirlash";
+    document.getElementById('fSName').value   = s.name;
+    document.getElementById('fSAddr').value   = s.address;
+    document.getElementById('fSPhone').value  = s.phone || '';
+    document.getElementById('fSHours').value  = s.hours || '';
+    document.getElementById('fSStatus').value = s.status;
+    openModal('modalShop');
+}
+
+function saveShop() {
+    const name   = document.getElementById('fSName').value.trim();
+    const address = document.getElementById('fSAddr').value.trim();
+    const phone  = document.getElementById('fSPhone').value.trim();
+    const hours  = document.getElementById('fSHours').value.trim();
+    const status = document.getElementById('fSStatus').value;
+    if (!name || !address) { alert("Do'kon nomi va manzilini kiriting!"); return; }
+
+    if (editSId) {
+        const s = SHOPS.find(x => x.id === editSId);
+        if (s) Object.assign(s, { name, address, phone, hours, status });
+    } else {
+        SHOPS.push({ id:'s'+Date.now(), name, address, phone, hours, status });
+    }
+    closeModal('modalShop');
+    renderShops(); renderDashboard();
+}
+
+function deleteShop(id) {
+    if (!confirm("Bu do'konni o'chirasizmi?")) return;
+    SHOPS = SHOPS.filter(s => s.id !== id);
+    renderShops(); renderDashboard();
+}
+
+// ── SETTINGS ──
+function saveSettings() { alert('✅ Sozlamalar saqlandi!'); }
+
+// ── NOTIFICATIONS ──
+function showNotifs() {
+    document.getElementById('bellDot').style.display = 'none';
+    alert('📬 Yangi buyurtmalar:\n• #A8492 – Alisher Usmonov\n• #A8495 – Malika Ergasheva');
+}
+
+// ── MODAL UTILS ──
+function openModal(id)  { document.getElementById(id).classList.remove('hidden'); document.body.style.overflow = 'hidden'; }
+function closeModal(id) { document.getElementById(id).classList.add('hidden');    document.body.style.overflow = ''; }
+
+document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', e => { if (e.target === el) closeModal(el.id); });
+});
+
+function previewImg(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+        const img = document.getElementById('productImgPreview');
+        img.src = e.target.result; img.style.display = 'block';
+        document.getElementById('imgUploadArea').style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+}
+
+// ── INIT ──
+renderDashboard();
+renderProducts();
+renderShops();
+renderOrders();
+</script>
 </body>
 </html>

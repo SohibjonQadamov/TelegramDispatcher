@@ -1,0 +1,1735 @@
+<!DOCTYPE html>
+<html lang="uz">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>🍔 Fast Food Premium</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --primary: #007AFF;
+            --secondary: #FF3B30;
+            --success: #34C759;
+            --bg: #F2F2F7;
+            --card: #FFFFFF;
+            --text-main: #000000;
+            --text-muted: #8E8E93;
+            --border: rgba(60, 60, 67, 0.29);
+            --search-bg: rgba(118, 118, 128, 0.12);
+            --nav-bg: rgba(242, 242, 247, 0.85);
+            --radius-lg: 20px;
+            --radius-md: 16px;
+            --radius-sm: 12px;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --font: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            --transition: all 0.3s ease;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #000000;
+                --card: #1C1C1E;
+                --text-main: #FFFFFF;
+                --text-muted: #EBEBF5;
+                --border: rgba(84, 84, 88, 0.65);
+                --search-bg: rgba(118, 118, 128, 0.24);
+                --nav-bg: rgba(28, 28, 30, 0.85);
+            }
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: var(--font);
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            padding-bottom: 90px;
+            padding-top: env(safe-area-inset-top);
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Animations */
+        @keyframes fadeSlide {
+            from {
+                opacity: 0;
+                transform: translateY(15px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes bounce {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-3px);
+            }
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateY(100%);
+            }
+
+            to {
+                transform: translateY(0);
+            }
+        }
+
+        .page {
+            display: none;
+        }
+
+        .page.active {
+            display: block;
+            animation: fadeSlide 0.35s cubic-bezier(0.25, 0.1, 0.25, 1);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .clickable {
+            cursor: pointer;
+            transition: transform 0.2s cubic-bezier(0.25, 0.1, 0.25, 1), opacity 0.2s ease;
+        }
+
+        .clickable:active {
+            transform: scale(0.97);
+            opacity: 0.8;
+        }
+
+        /* HEADER */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: var(--nav-bg);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 0.5px solid var(--border);
+            +
+        }
+
+        .header-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header-logo {
+            font-size: 24px;
+        }
+
+        .header-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.4px;
+        }
+
+        .header-user {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--search-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .header-user img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* PROMO CARDS (Stories) */
+        .stories-wrapper {
+            padding: 0 0 16px 20px;
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            scroll-snap-type: x mandatory;
+            scrollbar-width: none;
+        }
+
+        .stories-wrapper::-webkit-scrollbar {
+            display: none;
+        }
+
+        .story-card {
+            min-width: 150px;
+            height: 180px;
+            border-radius: var(--radius-lg);
+            position: relative;
+            overflow: hidden;
+            scroll-snap-align: start;
+            box-shadow: var(--shadow-sm);
+            border: 0.5px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            background: var(--card);
+        }
+
+        .story-bg {
+            height: 60%;
+            background-size: cover;
+            background-position: center;
+            position: relative;
+        }
+
+        .story-badge {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: var(--secondary);
+            color: #FFF;
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .story-content {
+            height: 40%;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .story-title {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .story-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .story-price {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        .story-old-price {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-decoration: line-through;
+            display: block;
+            margin-top: -2px;
+        }
+
+        .promo-add-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            border: none;
+            background: var(--search-bg);
+            color: var(--primary);
+            font-size: 18px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .promo-qty-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .promo-qty-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            border: none;
+            background: var(--search-bg);
+            color: var(--text-main);
+            font-size: 16px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .promo-qty-btn.plus {
+            color: var(--primary);
+        }
+
+        .promo-qty-val {
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 16px;
+            text-align: center;
+        }
+
+        /* SEARCH */
+        .search-container {
+            padding: 8px 20px 16px;
+        }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: var(--search-bg);
+            border-radius: 10px;
+            padding: 8px 12px;
+        }
+
+        .search-icon {
+            margin-right: 8px;
+            opacity: 0.6;
+        }
+
+        .search-icon svg {
+            width: 16px;
+            height: 16px;
+            fill: var(--text-main);
+        }
+
+        .search-input {
+            width: 100%;
+            border: none;
+            background: transparent;
+            font-size: 17px;
+            color: var(--text-main);
+            font-family: var(--font);
+            outline: none;
+        }
+
+        .search-input::placeholder {
+            color: var(--text-muted);
+            opacity: 0.8;
+        }
+
+        /* CATEGORIES (Chips) */
+        .categories {
+            display: flex;
+            gap: 8px;
+            padding: 0 20px 16px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+
+        .categories::-webkit-scrollbar {
+            display: none;
+        }
+
+        .cat-btn {
+            padding: 8px 16px;
+            border-radius: 100px;
+            border: none;
+            background: var(--search-bg);
+            color: var(--text-main);
+            font-size: 15px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .cat-btn.active {
+            background: var(--primary);
+            color: #FFF;
+        }
+
+        /* SECTION TITLE */
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px 12px;
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.4px;
+        }
+
+        .section-link {
+            color: var(--primary);
+            font-size: 15px;
+            font-weight: 400;
+            text-decoration: none;
+        }
+
+        /* RESTAURANTS / ITEMS GRID */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            padding: 0 20px 20px;
+        }
+
+        .item-card {
+            background: var(--card);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .item-img-wrap {
+            height: 120px;
+            background: var(--search-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 50px;
+            position: relative;
+        }
+
+        .item-fav {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .item-fav {
+                background: rgba(0, 0, 0, 0.5);
+            }
+        }
+
+        .item-fav svg {
+            width: 14px;
+            height: 14px;
+            fill: none;
+            stroke: var(--text-main);
+            stroke-width: 2;
+        }
+
+        .item-fav.active svg {
+            fill: var(--secondary);
+            stroke: var(--secondary);
+        }
+
+        .item-info {
+            padding: 12px;
+        }
+
+        .item-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            line-height: 1.2;
+            letter-spacing: -0.2px;
+        }
+
+        .item-meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .item-rating {
+            color: var(--text-main);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .item-rating svg {
+            width: 12px;
+            height: 12px;
+            fill: var(--primary);
+        }
+
+        .item-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .item-price {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .add-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            border: none;
+            background: var(--search-bg);
+            color: var(--primary);
+            font-size: 20px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* PRODUCT LIST (Store Menu) */
+        .menu-list {
+            padding: 0 20px;
+        }
+
+        .menu-item {
+            display: flex;
+            gap: 14px;
+            padding: 16px 0;
+            border-bottom: 0.5px solid var(--border);
+        }
+
+        .menu-item:last-child {
+            border-bottom: none;
+        }
+
+        .menu-img {
+            width: 80px;
+            height: 80px;
+            border-radius: var(--radius-sm);
+            background: var(--search-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+        }
+
+        .menu-details {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .menu-name {
+            font-size: 17px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+        }
+
+        .menu-desc {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.3;
+            margin-top: 4px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .menu-price-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 8px;
+        }
+
+        .menu-price {
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .qty-control {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .qty-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            border: none;
+            background: var(--search-bg);
+            color: var(--text-main);
+            font-size: 18px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .qty-btn.plus {
+            color: var(--primary);
+        }
+
+        .qty-val {
+            font-size: 15px;
+            font-weight: 500;
+            min-width: 20px;
+            text-align: center;
+        }
+
+        /* PROFILE */
+        .profile-header {
+            padding: 30px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #FFFFFF;
+            border-bottom-left-radius: 24px;
+            border-bottom-right-radius: 24px;
+        }
+
+        .profile-pic-wrap {
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
+            padding: 3px;
+            background: rgba(255, 255, 255, 0.3);
+            margin-bottom: 16px;
+        }
+
+        .profile-pic {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: #FFFFFF;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            overflow: hidden;
+            color: #764ba2;
+        }
+
+        .profile-pic img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .profile-name {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            letter-spacing: -0.4px;
+        }
+
+        .profile-phone {
+            font-size: 15px;
+            opacity: 0.9;
+            font-weight: 400;
+        }
+
+        .settings-list {
+            padding: 20px;
+        }
+
+        .setting-group {
+            background: var(--card);
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .setting-item {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 16px;
+            border-bottom: 0.5px solid var(--border);
+        }
+
+        .setting-item:last-child {
+            border-bottom: none;
+        }
+
+        .setting-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: var(--primary);
+            color: #FFF;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .setting-icon.red {
+            background: var(--secondary);
+        }
+
+        .setting-icon.green {
+            background: var(--success);
+        }
+
+        .setting-icon.gray {
+            background: var(--text-muted);
+        }
+
+        .setting-icon svg {
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
+        }
+
+        .setting-info {
+            flex: 1;
+        }
+
+        .setting-title {
+            font-size: 17px;
+            font-weight: 400;
+            letter-spacing: -0.3px;
+        }
+
+        .setting-arrow {
+            color: var(--text-muted);
+            opacity: 0.5;
+        }
+
+        .setting-arrow svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        /* BOTTOM NAV */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--nav-bg);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            display: flex;
+            justify-content: space-around;
+            padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+            border-top: 0.5px solid var(--border);
+            z-index: 100;
+        }
+
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-muted);
+            border: none;
+            background: none;
+            width: 64px;
+        }
+
+        .nav-item.active {
+            color: var(--primary);
+        }
+
+        .nav-icon {
+            width: 24px;
+            height: 24px;
+            margin-bottom: 2px;
+        }
+
+        .nav-icon svg {
+            width: 100%;
+            height: 100%;
+            fill: currentColor;
+        }
+
+        /* CART SHEET MODAL */
+        .cart-sheet-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .cart-sheet-overlay.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .cart-sheet {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--card);
+            border-radius: 20px 20px 0 0;
+            padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+            transform: translateY(100%);
+            transition: transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+            box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .cart-sheet-overlay.visible .cart-sheet {
+            transform: translateY(0);
+        }
+
+        .cart-handle {
+            width: 36px;
+            height: 5px;
+            border-radius: 3px;
+            background: var(--border);
+            margin: -10px auto 20px;
+        }
+
+        .cart-summary-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 15px;
+        }
+
+        .cart-summary-row.total {
+            font-weight: 700;
+            font-size: 19px;
+            border-top: 0.5px solid var(--border);
+            padding-top: 12px;
+            margin-top: 4px;
+            margin-bottom: 24px;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: #FFF;
+            width: 100%;
+            height: 54px;
+            border-radius: 14px;
+            border: none;
+            font-size: 17px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* STICKY CART STRIP (replaces float btn) */
+        .cart-strip {
+            position: fixed;
+            bottom: calc(60px + env(safe-area-inset-bottom));
+            left: 16px;
+            right: 16px;
+            background: var(--primary);
+            color: #FFF;
+            border-radius: 14px;
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 99;
+            transform: translateY(150%);
+            transition: transform 0.4s cubic-bezier(0.25, 0.1, 0.25, 1);
+            box-shadow: var(--shadow-md);
+        }
+
+        .cart-strip.visible {
+            transform: translateY(0);
+        }
+
+        .cart-strip-title {
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .cart-strip-badge {
+            background: #FFF;
+            color: var(--primary);
+            border-radius: 10px;
+            padding: 2px 8px;
+            font-size: 13px;
+            font-weight: 700;
+            animation: bounce 0.4s ease;
+        }
+
+        .cart-strip-price {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        /* STORE HEADER DETAILED */
+        .store-header-img {
+            height: 160px;
+            background: linear-gradient(135deg, #FF9A9E, #FECFEF);
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 60px;
+        }
+
+        .store-back-btn {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .store-back-btn {
+                background: rgba(0, 0, 0, 0.5);
+            }
+        }
+
+        .store-back-btn svg {
+            width: 16px;
+            height: 16px;
+            fill: var(--text-main);
+        }
+
+        .store-info-card {
+            margin: -20px 20px 20px;
+            background: var(--card);
+            border-radius: var(--radius-md);
+            padding: 20px;
+            box-shadow: var(--shadow-sm);
+            position: relative;
+            z-index: 10;
+        }
+
+        .store-info-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            letter-spacing: -0.4px;
+        }
+
+        .store-info-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .store-info-meta div {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .store-info-meta svg {
+            width: 14px;
+            height: 14px;
+            fill: var(--text-muted);
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- MAIN HEADER -->
+    <div class="header" id="mainHeader">
+        <div class="header-brand">
+            <span class="header-logo">🍔</span>
+            <span class="header-title">Fast Food</span>
+        </div>
+        <div class="header-user clickable" id="headerAvatar" onclick="showPage('profile')">👤</div>
+    </div>
+
+    <!-- PAGE: HOME -->
+    <div class="page active" id="page-home">
+        <!-- Search -->
+        <div class="search-container">
+            <div class="search-box">
+                <div class="search-icon">
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                    </svg>
+                </div>
+                <input type="text" class="search-input" id="searchInput" placeholder="Restoran yoki taom qidirish">
+            </div>
+        </div>
+
+        <!-- Stories / Promo Banners -->
+        <div class="section-header" style="padding-top: 8px; padding-bottom: 12px;">
+            <div class="section-title">Chegirmalar 🔥</div>
+        </div>
+        <div class="stories-wrapper" id="promoItems">
+            <!-- JS generates promo items -->
+        </div>
+
+        <!-- Categories -->
+        <div class="categories" style="margin-top: 4px;">
+            <button class="cat-btn clickable active">Hammasi</button>
+            <button class="cat-btn clickable">🍔 Burgerlar</button>
+            <button class="cat-btn clickable">🥙 Lavash</button>
+            <button class="cat-btn clickable">🍕 Pitsa</button>
+            <button class="cat-btn clickable">🍣 Sushi</button>
+        </div>
+
+        <!-- Recommended Stores -->
+        <div class="section-header">
+            <div class="section-title">Tavsiya etamiz</div>
+            <a href="#" class="section-link">Barchasi</a>
+        </div>
+        <div class="grid-container" id="storesList" style="min-height: 150px;">
+            <!-- JS generates stores here -->
+        </div>
+
+        <div id="noStoresMsg" style="display: none; text-align: center; padding: 20px; color: var(--text-muted);">Hech
+            narsa topilmadi</div>
+
+        <!-- Popular Items -->
+        <div class="section-header">
+            <div class="section-title">Ommabop taomlar</div>
+        </div>
+        <div class="grid-container" id="popularItems" style="padding-bottom: 40px;">
+            <!-- JS generates popular items -->
+        </div>
+    </div>
+
+    <!-- PAGE: FAVORITES -->
+    <div class="page" id="page-favorites">
+        <div class="section-header" style="padding-top: 16px;">
+            <div class="section-title">Sevimlilar ❤️</div>
+        </div>
+        <div class="grid-container" id="favoritesList" style="padding-bottom: 40px; min-height: 200px;">
+            <!-- JS generates favorites -->
+        </div>
+        <div id="noFavsMsg" style="display: none; text-align: center; padding: 40px 20px; color: var(--text-muted);">
+            Sizda sevimli restoranlar yo'q</div>
+    </div>
+
+    <!-- PAGE: ORDERS -->
+    <div class="page" id="page-orders">
+        <div class="section-header" style="padding-top: 16px;">
+            <div class="section-title">Mening buyurtmalarim 📦</div>
+        </div>
+        <div style="padding: 0 20px 40px; display: flex; flex-direction: column; gap: 16px;" id="ordersList">
+            <!-- Mock Orders -->
+            <div class="store-info-card" style="margin: 0;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span style="font-weight: 700;">Buyurtma #1024</span>
+                    <span style="color: var(--success); font-weight: 600;">Yetkazildi</span>
+                </div>
+                <div style="font-size: 14px; color: var(--text-muted); margin-bottom: 12px;">Evos • 12 May, 14:30</div>
+                <div style="font-size: 15px;">Lavash Standart x2, Coca-Cola x1</div>
+                <div style="margin-top: 12px; font-weight: 700; font-size: 16px;">64 000 so'm</div>
+            </div>
+
+            <div class="store-info-card" style="margin: 0;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                    <span style="font-weight: 700;">Buyurtma #985</span>
+                    <span style="color: var(--text-muted); font-weight: 600;">Bekor qilingan</span>
+                </div>
+                <div style="font-size: 14px; color: var(--text-muted); margin-bottom: 12px;">KFC • 01 May, 19:15</div>
+                <div style="font-size: 15px;">Burger Combo x1</div>
+                <div style="margin-top: 12px; font-weight: 700; font-size: 16px;">35 000 so'm</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAGE: STORE DETAILED -->
+    <div class="page" id="page-store">
+        <div class="store-header-img" id="storeHeaderImg">
+            <button class="store-back-btn clickable" onclick="showPage('home')">
+                <svg viewBox="0 0 24 24">
+                    <path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z" />
+                </svg>
+            </button>
+            <span id="storeHeaderEmoji">🍔</span>
+        </div>
+        <div class="store-info-card">
+            <div class="store-info-title" id="storeDetailedName">Restoran Nomi</div>
+            <div class="store-info-meta">
+                <div><svg viewBox="0 0 24 24" style="fill:var(--primary)">
+                        <path
+                            d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                    </svg> <span id="storeDetailedRating">4.8</span></div>
+                <div><svg viewBox="0 0 24 24">
+                        <path
+                            d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z" />
+                        <path d="M12.5 7H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
+                    </svg> <span id="storeDetailedTime">20-30 min</span></div>
+            </div>
+        </div>
+
+        <div class="categories" id="storeCategories">
+            <button class="cat-btn clickable active">Barchasi</button>
+            <button class="cat-btn clickable">Lavash</button>
+            <button class="cat-btn clickable">Burger</button>
+            <button class="cat-btn clickable">Ichimliklar</button>
+        </div>
+
+        <div class="menu-list" id="storeMenu" style="padding-bottom: 60px;">
+            <!-- JS generates menu items -->
+        </div>
+    </div>
+
+    <!-- PAGE: PROFILE -->
+    <div class="page" id="page-profile">
+        <div class="profile-header">
+            <div class="profile-pic-wrap">
+                <div class="profile-pic" id="profileAvatarBig">👤</div>
+            </div>
+            <div class="profile-name" id="profileName">Ism Familiya</div>
+            <div class="profile-phone" id="profilePhone">+998 •• ••• •• ••</div>
+        </div>
+
+        <div class="settings-list">
+            <div class="setting-group">
+                <div class="setting-item clickable">
+                    <div class="setting-icon"><svg viewBox="0 0 24 24">
+                            <path
+                                d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
+                        </svg></div>
+                    <div class="setting-info">
+                        <div class="setting-title">Mening manzillarim</div>
+                    </div>
+                    <div class="setting-arrow"><svg viewBox="0 0 24 24">
+                            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                        </svg></div>
+                </div>
+                <div class="setting-item clickable">
+                    <div class="setting-icon green"><svg viewBox="0 0 24 24">
+                            <path
+                                d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                        </svg></div>
+                    <div class="setting-info">
+                        <div class="setting-title">Buyurtmalar tarixi</div>
+                    </div>
+                    <div class="setting-arrow"><svg viewBox="0 0 24 24">
+                            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                        </svg></div>
+                </div>
+                <div class="setting-item clickable">
+                    <div class="setting-icon gray"><svg viewBox="0 0 24 24">
+                            <path
+                                d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z" />
+                        </svg></div>
+                    <div class="setting-info">
+                        <div class="setting-title">To'lov usullari</div>
+                    </div>
+                    <div class="setting-arrow"><svg viewBox="0 0 24 24">
+                            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                        </svg></div>
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <div class="setting-item clickable">
+                    <div class="setting-icon red"><svg viewBox="0 0 24 24">
+                            <path
+                                d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" />
+                        </svg></div>
+                    <div class="setting-info">
+                        <div class="setting-title">Bildirishnomalar</div>
+                    </div>
+                    <div class="setting-arrow"><svg viewBox="0 0 24 24">
+                            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                        </svg></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BOTTOM NAVIGATION -->
+    <div class="bottom-nav">
+        <button class="nav-item clickable active" id="nav-home" onclick="showPage('home')">
+            <div class="nav-icon"><svg viewBox="0 0 24 24">
+                    <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" />
+                </svg></div>
+            Bosh sahifa
+        </button>
+        <button class="nav-item clickable" id="nav-favorites" onclick="showPage('favorites')">
+            <div class="nav-icon"><svg viewBox="0 0 24 24">
+                    <path
+                        d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg></div>
+            Sevimlilar
+        </button>
+        <button class="nav-item clickable" id="nav-orders" onclick="showPage('orders')">
+            <div class="nav-icon"><svg viewBox="0 0 24 24">
+                    <path
+                        d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                </svg></div>
+            Buyurtmalar
+        </button>
+        <button class="nav-item clickable" id="nav-profile" onclick="showPage('profile')">
+            <div class="nav-icon"><svg viewBox="0 0 24 24">
+                    <path
+                        d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                </svg></div>
+            Profil
+        </button>
+    </div>
+
+    <!-- STICKY CART STRIP -->
+    <div class="cart-strip clickable" id="cartStrip" onclick="openCartSheet()">
+        <div class="cart-strip-title">
+            <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:#FFF">
+                <path
+                    d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63h7.45c.75 0 1.41-.41 1.75-1.03l3.58-6.49c.08-.14.12-.31.12-.48 0-.55-.45-1-1-1H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+            Savat <span class="cart-strip-badge" id="cartStripQty">0</span>
+        </div>
+        <div class="cart-strip-price" id="cartStripTotal">0 so'm</div>
+    </div>
+
+    <!-- CART SHEET MODAL -->
+    <div class="cart-sheet-overlay" id="cartSheetOverlay" onclick="closeCartSheet()">
+        <div class="cart-sheet" onclick="event.stopPropagation()">
+            <div class="cart-handle"></div>
+            <h2 style="font-size: 22px; font-weight: 700; margin-bottom: 20px; letter-spacing: -0.4px;">Savat</h2>
+
+            <div id="cartSheetItems" style="max-height: 40vh; overflow-y: auto; margin-bottom: 20px;">
+                <!-- JS generates cart items -->
+            </div>
+
+            <div class="cart-summary-row">
+                <span>Mahsulotlar:</span>
+                <span id="sheetSubtotal">0 so'm</span>
+            </div>
+            <div class="cart-summary-row">
+                <span>Yetkazish:</span>
+                <span>10 000 so'm</span>
+            </div>
+            <div class="cart-summary-row total">
+                <span>Jami:</span>
+                <span id="sheetTotal">0 so'm</span>
+            </div>
+
+            <button class="btn-primary clickable" onclick="submitOrder()">Buyurtma berish</button>
+        </div>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.ready();
+
+        let cart = {};
+        let currentStoreId = null;
+
+        // Apply theme matching Telegram (iOS styles will adapt if variables match)
+        const bgC = tg.themeParams?.bg_color;
+        const secBgC = tg.themeParams?.secondary_bg_color;
+        const txtC = tg.themeParams?.text_color;
+        if (bgC) {
+            document.documentElement.style.setProperty('--bg', bgC);
+            document.documentElement.style.setProperty('--nav-bg', bgC + 'D9'); // Add alpha for blur
+        }
+        if (secBgC) document.documentElement.style.setProperty('--card', secBgC);
+        if (txtC) document.documentElement.style.setProperty('--text-main', txtC);
+
+        // Data variables
+        let stores = [
+            { id: 1, name: "Evos", emoji: "🥙", time: "15-20", rating: "4.8", type: "Fast Food", bg: "linear-gradient(135deg, #FF9A9E, #FECFEF)" },
+            { id: 2, name: "Oqtepa Lavash", emoji: "🌯", time: "20-25", rating: "4.6", type: "Lavash", bg: "linear-gradient(135deg, #a18cd1, #fbc2eb)" },
+            { id: 3, name: "Bellissimo Pizza", emoji: "🍕", time: "30-40", rating: "4.9", type: "Pitsa", bg: "linear-gradient(135deg, #f6d365, #fda085)" },
+            { id: 4, name: "KFC", emoji: "🍗", time: "15-25", rating: "4.7", type: "Burgerlar", bg: "linear-gradient(135deg, #ff0844, #ffb199)" },
+            { id: 5, name: "Yaponamama", emoji: "🍣", time: "40-50", rating: "4.8", type: "Sushi", bg: "linear-gradient(135deg, #84fab0, #8fd3f4)" },
+            { id: 6, name: "Max Way", emoji: "🍔", time: "10-20", rating: "4.5", type: "Burgerlar", bg: "linear-gradient(135deg, #e0c3fc, #8ec5fc)" }
+        ];
+
+        let menuItems = {
+            1: [
+                { id: 101, name: "Lavash Standart", price: 28000, desc: "Mol go'shti, chips, bodring, pomidor, maxsus sous", emoji: "🥙", cat: "Lavash" },
+                { id: 102, name: "Lavash Tovuq", price: 26000, desc: "Tovuq filesi, chips, pishloq, sous", emoji: "🌯", cat: "Lavash" },
+                { id: 103, name: "Gamburger", price: 22000, desc: "Mol go'shti kotleti, salat bargi, pomidor", emoji: "🍔", cat: "Burger" },
+                { id: 104, name: "Coca-Cola 0.5L", price: 8000, desc: "Muzdek salqin ichimlik", emoji: "🥤", cat: "Ichimliklar" },
+                { id: 105, name: "Klab Sendvich", price: 32000, desc: "Tovuq go'shti, tuxum, pishloq va fri", emoji: "🥪", cat: "Fast Food" }
+            ],
+            2: [
+                { id: 201, name: "Oqtepa Lavash", price: 29000, desc: "Katta va to'yimli lavash", emoji: "🌯", cat: "Lavash" },
+                { id: 202, name: "Chizburger", price: 24000, desc: "Eritilgan pishloqli ajoyib burger", emoji: "🍔", cat: "Burger" },
+                { id: 203, name: "Fanta 0.5L", price: 8000, desc: "Apelsin ta'mli ichimlik", emoji: "🧃", cat: "Ichimliklar" }
+            ],
+            3: [
+                { id: 301, name: "Peperoni Pitsa", price: 75000, desc: "Mazzali kolbasa va motsarella pishlog'i", emoji: "🍕", cat: "Pitsa" },
+                { id: 302, name: "Margarita Pitsa", price: 65000, desc: "Klassik italyan pitsasi, pomidor bilan", emoji: "🍕", cat: "Pitsa" },
+                { id: 303, name: "Chicken Pitsa", price: 70000, desc: "Tovuq filesi, qo'ziqorin va pishloq", emoji: "🍕", cat: "Pitsa" },
+                { id: 304, name: "Sok 1L", price: 15000, desc: "Tabiiy meva sharbati", emoji: "🍹", cat: "Ichimliklar" }
+            ]
+        };
+
+        let promoItemsData = [
+            { id: 1001, name: "Burger Combo", price: 35000, oldPrice: 45000, discount: "-20%", img: "https://images.unsplash.com/photo-1550547660-d9450f859349?w=300", emoji: "🍔", desc: "Maxsus burger va ichimlik", cat: "Burgerlar", store_id: 1 },
+            { id: 1002, name: "Pitsa Set", price: 55000, oldPrice: 70000, discount: "-21%", img: "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=300", emoji: "🍕", desc: "Katta pitsa va fri", cat: "Pitsa", store_id: 3 },
+            { id: 1003, name: "Hot Dog Mega", price: 18000, oldPrice: 22000, discount: "-18%", img: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=300", emoji: "🌭", desc: "Ikki karra sosiskali hot-dog", cat: "Fast Food", store_id: 1 }
+        ];
+
+        let currentHomeCategory = "Hammasi";
+        let currentSearchQuery = "";
+        let currentStoreCategory = "Barchasi";
+
+        // Favorites logic
+        let favorites = JSON.parse(localStorage.getItem('fastfood_favs') || '[]');
+        function toggleFav(id) {
+            if (favorites.includes(id)) {
+                favorites = favorites.filter(x => x !== id);
+            } else {
+                favorites.push(id);
+            }
+            localStorage.setItem('fastfood_favs', JSON.stringify(favorites));
+            renderHome();
+            renderFavorites();
+        }
+
+        // Render Functions
+        function renderHome() {
+            const promoHtml = promoItemsData.map(p => {
+                const q = cart[p.id]?.qty || 0;
+                const storeId = p.store_id || 1;
+                const storeName = stores.find(s => s.id == storeId)?.name || "Do'kon";
+                return `
+            <div class="story-card clickable" onclick="openStore(${storeId})">
+                <div class="story-bg" style="background-image: url('${p.img}');">
+                    <div class="story-badge">${p.discount}</div>
+                </div>
+                <div class="story-content">
+                    <div>
+                        <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 2px;">🏪 ${storeName}</div>
+                        <div class="story-title">${p.name}</div>
+                        <span class="story-old-price">${p.oldPrice.toLocaleString()} so'm</span>
+                        <div style="font-size: 11px; margin-top: 2px; color: #32D74B; font-weight: 600;">Qoldi: ${p.discount_qty} ta • ${p.discount_end !== 'Muddatsiz' ? p.discount_end + ' gacha' : 'Muddatsiz'}</div>
+                    </div>
+                    <div class="story-bottom">
+                        <div class="story-price">${p.price.toLocaleString()}</div>
+                        ${q > 0 ? `
+                        <div class="promo-qty-control" onclick="event.stopPropagation()">
+                            <button class="promo-qty-btn clickable" onclick="updateCart(${p.id}, -1, ${storeId})">−</button>
+                            <span class="promo-qty-val">${q}</span>
+                            <button class="promo-qty-btn plus clickable" onclick="updateCart(${p.id}, 1, ${storeId})">+</button>
+                        </div>
+                        ` : `
+                        <button class="promo-add-btn clickable" onclick="event.stopPropagation(); updateCart(${p.id}, 1, ${storeId})">+</button>
+                        `}
+                    </div>
+                </div>
+            </div>
+        `;
+            }).join('');
+            document.getElementById('promoItems').innerHTML = promoHtml;
+
+            // Filter Stores based on Category and Search
+            let filteredStores = stores.filter(s => {
+                const sType = s.type || "";
+                const sName = s.name || "";
+                const matchesCat = currentHomeCategory === "Hammasi" || sType.includes(currentHomeCategory) || (currentHomeCategory.includes("Burger") && sName.includes("Evos")); // basic mock filter logic
+                const matchesSearch = sName.toLowerCase().includes(currentSearchQuery) || sType.toLowerCase().includes(currentSearchQuery);
+                return matchesCat && matchesSearch;
+            });
+
+            const storesHtml = filteredStores.map(s => {
+                const isFav = favorites.includes(s.id);
+                return `
+        <div class="item-card clickable" onclick="openStore(${s.id})">
+            <div class="item-img-wrap" style="background: ${s.bg}">${s.emoji}
+                <div class="item-fav ${isFav ? 'active' : ''}" onclick="event.stopPropagation(); toggleFav(${s.id})">
+                    <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                </div>
+            </div>
+            <div class="item-info">
+                <div class="item-title">${s.name}</div>
+                <div class="item-meta">
+                    <span class="item-rating"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ${s.rating}</span>
+                    <span>•</span>
+                    <span>${s.time} min</span>
+                </div>
+                <div class="item-bottom">
+                    <span style="font-size: 13px; color: var(--text-muted); font-weight: 500;">${s.type}</span>
+                </div>
+            </div>
+        </div>
+        `;
+            }).join('');
+
+            document.getElementById('storesList').innerHTML = storesHtml;
+            document.getElementById('noStoresMsg').style.display = filteredStores.length === 0 ? 'block' : 'none';
+
+            let allItemsList = [];
+            if (menuItems[1]) allItemsList = [...menuItems[1]];
+            else if (Object.keys(menuItems).length > 0) allItemsList = [...menuItems[Object.keys(menuItems)[0]]];
+
+            const popHtml = allItemsList.filter(i => i.cat !== undefined).slice(0, 2).map(p => `
+        <div class="item-card clickable" onclick="openStore(${p.store_id || 1})">
+            <div class="item-img-wrap">${p.emoji || '🍔'}</div>
+            <div class="item-info">
+                <div class="item-title">${p.name}</div>
+                <div class="item-bottom" style="margin-top: 8px;">
+                    <div class="item-price">${p.price.toLocaleString()} so'm</div>
+                    <button class="add-btn clickable" onclick="event.stopPropagation(); updateCart(${p.id}, 1, ${p.store_id || 1})">+</button>
+                </div>
+            </div>
+        </div>
+    `).join('');
+            document.getElementById('popularItems').innerHTML = popHtml;
+        }
+
+        function openStore(id) {
+            const s = stores.find(x => x.id === id);
+            if (!s) return;
+            currentStoreId = id;
+
+            document.getElementById('storeHeaderImg').style.background = s.bg;
+            document.getElementById('storeHeaderEmoji').textContent = s.emoji;
+            document.getElementById('storeDetailedName').textContent = s.name;
+            document.getElementById('storeDetailedRating').textContent = s.rating;
+            document.getElementById('storeDetailedTime').textContent = s.time + " min";
+
+            renderStoreMenu(id);
+            showPage('store');
+        }
+
+        function renderFavorites() {
+            const favStores = stores.filter(s => favorites.includes(s.id));
+            const favHtml = favStores.map(s => `
+        <div class="item-card clickable" onclick="openStore(${s.id})">
+            <div class="item-img-wrap" style="background: ${s.bg}">${s.emoji}
+                <div class="item-fav active" onclick="event.stopPropagation(); toggleFav(${s.id})">
+                    <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                </div>
+            </div>
+            <div class="item-info">
+                <div class="item-title">${s.name}</div>
+                <div class="item-meta">
+                    <span class="item-rating"><svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg> ${s.rating}</span>
+                    <span>•</span>
+                    <span>${s.time} min</span>
+                </div>
+                <div class="item-bottom">
+                    <span style="font-size: 13px; color: var(--text-muted); font-weight: 500;">${s.type}</span>
+                </div>
+            </div>
+        </div>
+    `).join('');
+            document.getElementById('favoritesList').innerHTML = favHtml;
+            document.getElementById('noFavsMsg').style.display = favStores.length === 0 ? 'block' : 'none';
+        }
+
+        function renderStoreMenu(storeId) {
+            let items = menuItems[storeId] || menuItems[1];
+
+            // Filter by store category
+            if (currentStoreCategory !== "Barchasi") {
+                items = items.filter(i => i.cat && i.cat.includes(currentStoreCategory) || i.cat === currentStoreCategory);
+            }
+
+            const html = items.map(p => {
+                const q = cart[p.id]?.qty || 0;
+                return \`
+            <div class="menu-item">
+                <div class="menu-img">\${p.emoji}</div>
+                <div class="menu-details">
+                    <div>
+                        <div class="menu-name">\${p.name}</div>
+                        <div class="menu-desc">\${p.desc}</div>
+                    </div>
+                    <div class="menu-price-row">
+                        <div class="menu-price">\${p.price.toLocaleString()} so'm</div>
+                        \${q > 0 ? \`
+                        <div class="qty-control">
+                            <button class="qty-btn clickable" onclick="updateCart(\${p.id}, -1)">−</button>
+                            <span class="qty-val">\${q}</span>
+                            <button class="qty-btn plus clickable" onclick="updateCart(\${p.id}, 1)">+</button>
+                        </div>
+                        \` : \`
+                        <button class="add-btn clickable" onclick="updateCart(\${p.id}, 1)">+</button>
+                        \`}
+                    </div>
+                </div>
+            </div>
+        \`;
+    }).join('');
+    document.getElementById('storeMenu').innerHTML = html;
+}
+
+function updateCart(itemId, delta, forceStoreId = null) {
+    const sId = forceStoreId || currentStoreId || 1;
+    let item = null;
+    
+    // Find item
+    if (menuItems[sId]) {
+        item = menuItems[sId].find(x => x.id === itemId);
+    }
+    if (!item) {
+        item = promoItemsData.find(x => x.id === itemId);
+    }
+    
+    if (!item) return;
+
+    if (!cart[itemId]) cart[itemId] = { ...item, qty: 0, store_id: sId };
+    cart[itemId].qty += delta;
+    
+    if (cart[itemId].qty <= 0) delete cart[itemId];
+    
+    updateCartUI();
+    if (document.getElementById('page-store').classList.contains('active')) {
+        renderStoreMenu(currentStoreId);
+    }
+    if (document.getElementById('page-home').classList.contains('active')) {
+        renderHome();
+    }
+}
+
+function updateCartUI() {
+    let totalQty = 0;
+    let totalPrice = 0;
+    for (const key in cart) {
+        totalQty += cart[key].qty;
+        totalPrice += cart[key].price * cart[key].qty;
+    }
+    
+    const strip = document.getElementById('cartStrip');
+    const badge = document.getElementById('cartStripQty');
+    
+    if (totalQty > 0) {
+        strip.classList.add('visible');
+        document.getElementById('cartStripTotal').textContent = totalPrice.toLocaleString() + " so'm";
+        
+        // Re-trigger bounce animation
+        badge.style.animation = 'none';
+        badge.offsetHeight; // trigger reflow
+        badge.style.animation = 'bounce 0.4s ease';
+        badge.textContent = totalQty;
+        
+        tg.MainButton.text = \`Savat - \${totalPrice.toLocaleString()} so'm\`;
+        tg.MainButton.show();
+    } else {
+        strip.classList.remove('visible');
+        tg.MainButton.hide();
+        closeCartSheet(); // close if open
+    }
+}
+
+function openCartSheet() {
+    const sheetOverlay = document.getElementById('cartSheetOverlay');
+    const itemsContainer = document.getElementById('cartSheetItems');
+    
+    let html = '';
+    let subtotal = 0;
+    for (const key in cart) {
+        const item = cart[key];
+        subtotal += item.price * item.qty;
+        html += \`
+            <div class="menu-item" style="padding: 12px 0;">
+                <div class="menu-details">
+                    <div class="menu-name" style="font-size: 15px;">\${item.name}</div>
+                    <div class="menu-price-row" style="margin-top: 4px;">
+                        <div class="menu-price" style="font-size: 14px;">\${(item.price * item.qty).toLocaleString()} so'm</div>
+                        <div class="qty-control">
+                            <button class="qty-btn clickable" style="width:28px;height:28px;font-size:16px" onclick="updateCart(\${item.id}, -1); openCartSheet();">−</button>
+                            <span class="qty-val" style="font-size:14px">\${item.qty}</span>
+                            <button class="qty-btn plus clickable" style="width:28px;height:28px;font-size:16px" onclick="updateCart(\${item.id}, 1); openCartSheet();">+</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        \`;
+    }
+    
+    if (subtotal === 0) {
+        closeCartSheet();
+        return;
+    }
+    
+    itemsContainer.innerHTML = html;
+    document.getElementById('sheetSubtotal').textContent = subtotal.toLocaleString() + " so'm";
+    document.getElementById('sheetTotal').textContent = (subtotal + 10000).toLocaleString() + " so'm";
+    
+    sheetOverlay.classList.add('visible');
+}
+
+function closeCartSheet() {
+    document.getElementById('cartSheetOverlay').classList.remove('visible');
+}
+
+function submitOrder() {
+    let total = 10000; // delivery
+    let itemsStr = [];
+    let storeIdForOrder = null;
+    for (const key in cart) {
+        itemsStr.push(`${ cart[key].name } x${ cart[key].qty } `);
+        total += cart[key].price * cart[key].qty;
+        if (!storeIdForOrder) storeIdForOrder = cart[key].store_id;
+    }
+    tg.sendData(JSON.stringify({ action: "order", items: itemsStr.join(', '), total: total, store_id: storeIdForOrder }));
+    cart = {};
+    updateCartUI();
+    closeCartSheet();
+    tg.close();
+}
+
+tg.MainButton.onClick(submitOrder);
+
+function showPage(pageId) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + pageId).classList.add('active');
+    
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const navBtn = document.getElementById('nav-' + pageId);
+    if (navBtn) navBtn.classList.add('active');
+    
+    document.getElementById('mainHeader').style.display = pageId === 'store' ? 'none' : 'flex';
+    
+    if (pageId === 'favorites') {
+        renderFavorites();
+    }
+    
+    window.scrollTo(0,0);
+}
+
+function loadProfile() {
+    const user = tg.initDataUnsafe?.user;
+    if (user) {
+        const name = user.first_name + (user.last_name ? ' ' + user.last_name : '');
+        document.getElementById('profileName').textContent = name;
+        
+        if (user.photo_url) {
+            const imgHtml = \`<img src="\${user.photo_url}">\`;
+            document.getElementById('profileAvatarBig').innerHTML = imgHtml;
+            document.getElementById('headerAvatar').innerHTML = imgHtml;
+        } else {
+            const initial = user.first_name ? user.first_name.charAt(0) : 'U';
+            document.getElementById('profileAvatarBig').textContent = initial;
+            document.getElementById('headerAvatar').textContent = initial;
+        }
+    }
+}
+
+// Category filter toggle animation (Home)
+document.querySelector('#page-home .categories').addEventListener('click', (e) => {
+    if(e.target.classList.contains('cat-btn')) {
+        e.currentTarget.querySelectorAll('.cat-btn').forEach(btn => btn.classList.remove('active'));
+        e.target.classList.add('active');
+        currentHomeCategory = e.target.textContent.replace(/[🍔🥙🍕🍣]/g, '').trim();
+        renderHome();
+    }
+});
+
+// Category filter toggle animation (Store)
+document.querySelector('#storeCategories').addEventListener('click', (e) => {
+    if(e.target.classList.contains('cat-btn')) {
+        e.currentTarget.querySelectorAll('.cat-btn').forEach(btn => btn.classList.remove('active'));
+        e.target.classList.add('active');
+        currentStoreCategory = e.target.textContent.trim();
+        renderStoreMenu(currentStoreId);
+    }
+});
+
+// Search functionality
+document.getElementById('searchInput').addEventListener('input', (e) => {
+    currentSearchQuery = e.target.value.toLowerCase().trim();
+    renderHome();
+});
+
+async function initApp() {
+    try {
+        const res = await fetch('/api/data', {
+            headers: {
+                'Bypass-Tunnel-Reminder': 'true'
+            }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.stores && data.stores.length > 0) {
+                stores = data.stores;
+                menuItems = data.menuItems || {};
+                
+                promoItemsData = [];
+                const imgs = [
+                    "https://images.unsplash.com/photo-1550547660-d9450f859349?w=300",
+                    "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=300",
+                    "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?w=300"
+                ];
+
+                for (let sid in menuItems) {
+                    menuItems[sid].forEach(i => {
+                        i.store_id = sid;
+                        if (i.old_price && i.discount_qty > 0) {
+                            let validDate = true;
+                            if (i.discount_end) {
+                                const endDate = new Date(i.discount_end);
+                                const today = new Date();
+                                today.setHours(0,0,0,0);
+                                if (endDate < today) validDate = false;
+                            }
+                            if (validDate) {
+                                const discountPercent = Math.round(100 - (i.price / i.old_price * 100));
+                                promoItemsData.push({
+                                    id: i.id,
+                                    name: i.name,
+                                    price: i.price,
+                                    oldPrice: i.old_price,
+                                    discount: `- ${ discountPercent }%`,
+                                    img: imgs[promoItemsData.length % imgs.length],
+                                    emoji: i.emoji,
+                                    store_id: i.store_id,
+                                    discount_qty: i.discount_qty,
+                                    discount_end: i.discount_end || 'Muddatsiz'
+                                });
+                            }
+                        }
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.log("Using local mock data fallback");
+    }
+    renderHome();
+    renderFavorites();
+    loadProfile();
+}
+
+// Init
+initApp();
+    </script>
+</body>
+
+</html>
