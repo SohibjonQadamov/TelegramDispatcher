@@ -49,8 +49,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 @keyframes toastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 
 /* ===== APP ===== */
-#app{position:fixed;inset:0;display:flex;flex-direction:column;opacity:0;transform:translateY(6px);transition:opacity 0.38s,transform 0.38s}
-#app.show{opacity:1;transform:translateY(0)}
+/* NOTE: no transform — iOS position:fixed children must be viewport-relative */
+#app{position:fixed;inset:0;display:flex;flex-direction:column;opacity:0;transition:opacity 0.38s}
+#app.show{opacity:1}
 #app.gone{display:none}
 
 /* ===== TOP BAR ===== */
@@ -108,9 +109,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
   width:auto;
   min-width:300px;
   height:62px;
-  background:rgba(22,22,24,.9);
-  -webkit-backdrop-filter:blur(40px) saturate(200%);
-  backdrop-filter:blur(40px) saturate(200%);
+  background:rgba(22,22,24,.95);
+  -webkit-backdrop-filter:blur(16px) saturate(160%);
+  backdrop-filter:blur(16px) saturate(160%);
   border-radius:100px;
   border:.5px solid rgba(255,255,255,.10);
   display:flex;align-items:center;
@@ -784,24 +785,26 @@ async function loadAdminData() {
 }
 
 function showNoStoreSetup() {
-  const idInfo = ADMIN_ID ? `<div style="font-size:11px;color:var(--text3);margin-top:10px;font-family:monospace">ID: ${ADMIN_ID}</div>` : `<div style="font-size:11px;color:#C62828;margin-top:10px;font-weight:700">⚠️ Telegram ID aniqlanmadi. Iltimos botdan oching.</div>`;
   document.getElementById('statsGrid').innerHTML = `
-    <div style="grid-column:1/-1;background:#fff;border-radius:20px;padding:28px 20px;text-align:center;box-shadow:var(--shadow)">
-      <div style="font-size:52px;margin-bottom:12px">🏪</div>
-      <div style="font-size:18px;font-weight:800;margin-bottom:8px">Do'kon topilmadi</div>
-      <div style="font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:16px">
-        Botda quyidagi buyruqlarni yuboring:
+    <div style="grid-column:1/-1;background:#fff;border-radius:20px;padding:32px 20px;text-align:center;box-shadow:var(--shadow)">
+      <div style="font-size:56px;margin-bottom:14px">🏪</div>
+      <div style="font-size:20px;font-weight:800;margin-bottom:8px;color:var(--text)">Do'kon hali ochilmagan</div>
+      <div style="font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:20px">
+        Sozlamalar bo'limiga o'ting va do'kon ma'lumotlarini kiriting
       </div>
-      <div style="background:#f5f5f5;border-radius:12px;padding:12px 16px;text-align:left;font-family:monospace;font-size:14px;color:var(--text);margin-bottom:8px">
-        /mystore — do'kon ochish
-      </div>
-      <div style="background:#f5f5f5;border-radius:12px;padding:12px 16px;text-align:left;font-family:monospace;font-size:14px;color:var(--text)">
-        /addproduct — mahsulot qo'shish
-      </div>
-      ${idInfo}
+      <button onclick="navTo('set')" style="
+        display:inline-flex;align-items:center;gap:8px;
+        background:var(--red);color:#fff;border:none;
+        padding:13px 24px;border-radius:14px;
+        font-size:15px;font-weight:700;font-family:var(--font);
+        cursor:pointer;box-shadow:0 4px 16px rgba(198,40,40,.35)">
+        ⚙️ Do'kon ochish
+      </button>
     </div>`;
   const pg = document.getElementById('prodGrid'); if(pg) pg.innerHTML = `
-    <div class="empty" style="grid-column:1/-1"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Botda /addproduct yozing</div></div>`;
+    <div class="empty" style="grid-column:1/-1"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Avval do'kon oching</div></div>`;
+  // Auto-navigate to settings after short delay
+  setTimeout(() => navTo('set'), 800);
 }
 
 async function loadStats() {
