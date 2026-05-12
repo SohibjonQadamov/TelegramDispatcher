@@ -797,8 +797,8 @@ function showNoStoreSetup() {
         /addproduct — mahsulot qo'shish
       </div>
     </div>`;
-  document.getElementById('prodBlock').innerHTML = `
-    <div class="empty"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Botda /addproduct yozing</div></div>`;
+  const pg = document.getElementById('prodGrid'); if(pg) pg.innerHTML = `
+    <div class="empty" style="grid-column:1/-1"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Botda /addproduct yozing</div></div>`;
 }
 
 async function loadStats() {
