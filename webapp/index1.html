@@ -47,9 +47,8 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 #app.show{opacity:1;transform:translateY(0)}
 #app.gone{display:none}
 .pw{flex:1;position:relative;overflow:hidden}
-.pg{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-bottom:calc(96px + var(--sb));opacity:0;transform:translateX(20px);transition:opacity .28s,transform .28s cubic-bezier(.4,0,.2,1);pointer-events:none;will-change:transform,opacity;background:var(--bg)}
-.pg.on{opacity:1;transform:translateX(0);pointer-events:all}
-.pg.off{opacity:0;transform:translateX(-20px)}
+.pg{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding-bottom:calc(96px + var(--sb));display:none;background:var(--bg)}
+.pg.on{display:block}
 #page-profile{padding-bottom:calc(104px + var(--sb))}
 
 /* ===== KEYFRAMES ===== */
@@ -1262,12 +1261,11 @@ function renderOrderHistory() {
 // ── NAVIGATION ──
 function showPg(pg) {
   if (pg === curPg) return;
-  const prev = document.getElementById('page-'+curPg);
+  document.querySelectorAll('.pg').forEach(p => p.classList.remove('on'));
   const next = document.getElementById('page-'+pg);
-  if (prev) { prev.classList.remove('on'); prev.classList.add('off'); setTimeout(()=>{ prev.classList.remove('off'); }, 300); }
-  if (next) { setTimeout(()=>{ next.classList.add('on'); }, 20); }
+  if (next) next.classList.add('on');
   curPg = pg;
-  document.querySelectorAll('.nb').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('.nb').forEach(b => b.classList.remove('on'));
   const nb = document.getElementById('nb-'+pg);
   if (nb) nb.classList.add('on');
   if (pg === 'profile') renderOrderHistory();
