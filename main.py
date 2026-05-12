@@ -129,8 +129,9 @@ def init_db():
             try: conn.execute(col)
             except sqlite3.OperationalError: pass
 
-        # Add delivery/settings columns to stores
+        # Add ALL stores columns (safe — OperationalError silently ignored if column exists)
         for col in [
+            "ALTER TABLE stores ADD COLUMN admin_id INTEGER",
             "ALTER TABLE stores ADD COLUMN delivery_fee INTEGER DEFAULT 15000",
             "ALTER TABLE stores ADD COLUMN eta INTEGER DEFAULT 25",
             "ALTER TABLE stores ADD COLUMN radius REAL DEFAULT 5",
