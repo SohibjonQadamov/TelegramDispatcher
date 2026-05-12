@@ -45,8 +45,10 @@ if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise RuntimeError(".env ni to'ldiring")
 
 DB_PATH = Path("orders.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()   # Neon/Render PostgreSQL URL
+USE_PG = bool(DATABASE_URL)
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
-WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://d0fc-213-230-80-60.ngrok-free.app" # placeholder, user must update .env
+WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://d0fc-213-230-80-60.ngrok-free.app"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bot")
@@ -61,76 +63,137 @@ def is_admin(user_id: int) -> bool:
 
 
 # ================= DB =================
+# Schema — shared DDL logic; caller passes execute/executemany functions
+_TABLES_SQL = [
+    # orders
+    """CREATE TABLE IF NOT EXISTS orders (
+        id {serial} PRIMARY KEY,
+        created_at TEXT, status TEXT DEFAULT 'NEW',
+        full_name TEXT, phone TEXT, address TEXT,
+        lat REAL, lon REAL,
+        items TEXT, total INTEGER,
+        created_by_id BIGINT, created_by_name TEXT,
+        accepted_by_id BIGINT, accepted_by_name TEXT,
+        accepted_at TEXT, closed_at TEXT,
+        group_message_id INTEGER,
+        store_id INTEGER, target_chat_id BIGINT,
+        yandex_claim_id TEXT, yandex_status TEXT,
+        yandex_tracking_url TEXT, delivery_type TEXT DEFAULT 'own'
+    )""",
+    # users
+    """CREATE TABLE IF NOT EXISTS users (
+        user_id BIGINT PRIMARY KEY,
+        role TEXT DEFAULT 'user',
+        registered_at TEXT,
+        first_name TEXT, last_name TEXT,
+        username TEXT, language_code TEXT,
+        photo_url TEXT, onboarded INTEGER DEFAULT 0
+    )""",
+    # stores  ← CENTRAL TABLE: stores/products/orders separated
+    """CREATE TABLE IF NOT EXISTS stores (
+        id {serial} PRIMARY KEY,
+        admin_id BIGINT UNIQUE,
+        name TEXT, type TEXT, emoji TEXT, bg_color TEXT,
+        delivery_fee INTEGER DEFAULT 15000,
+        eta INTEGER DEFAULT 25,
+        radius REAL DEFAULT 5,
+        min_order INTEGER DEFAULT 50000,
+        hours_weekday TEXT DEFAULT '09:00-22:00',
+        hours_weekend TEXT DEFAULT '10:00-23:00',
+        is_open INTEGER DEFAULT 1,
+        accent_color TEXT DEFAULT '#FF6B35',
+        cover_url TEXT, description TEXT,
+        phone TEXT, address TEXT
+    )""",
+    # products  ← SEPARATE from stores
+    """CREATE TABLE IF NOT EXISTS products (
+        id {serial} PRIMARY KEY,
+        store_id INTEGER,
+        name TEXT, price INTEGER,
+        description TEXT, emoji TEXT, cat TEXT,
+        old_price INTEGER, discount_qty INTEGER, discount_end TEXT
+    )""",
+    # ratings
+    """CREATE TABLE IF NOT EXISTS ratings (
+        id {serial} PRIMARY KEY,
+        order_id INTEGER UNIQUE,
+        user_id BIGINT, store_id INTEGER,
+        stars INTEGER, comment TEXT, created_at TEXT
+    )""",
+    # subscriptions
+    """CREATE TABLE IF NOT EXISTS subscriptions (
+        id {serial} PRIMARY KEY,
+        store_id INTEGER UNIQUE,
+        admin_id BIGINT,
+        plan TEXT DEFAULT 'free',
+        orders_this_month INTEGER DEFAULT 0,
+        billing_month TEXT, next_billing TEXT, created_at TEXT
+    )""",
+    # transactions
+    """CREATE TABLE IF NOT EXISTS transactions (
+        id {serial} PRIMARY KEY,
+        provider TEXT, provider_tx_id TEXT UNIQUE,
+        order_id INTEGER, amount INTEGER,
+        state INTEGER DEFAULT 1,
+        created_at TEXT, performed_at TEXT,
+        cancelled_at TEXT, reason INTEGER
+    )""",
+]
+
+
 def init_db():
+    if USE_PG:
+        _init_db_pg()
+    else:
+        _init_db_sqlite()
+
+
+def _init_db_pg():
+    import psycopg2, psycopg2.extras
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            for tpl in _TABLES_SQL:
+                cur.execute(tpl.format(serial="BIGSERIAL"))
+            # Safe column migrations for PG (IF NOT EXISTS supported in PG 9.6+)
+            safe_cols = [
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id INTEGER",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS target_chat_id BIGINT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_claim_id TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_status TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_tracking_url TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_type TEXT DEFAULT 'own'",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_qty INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_end TEXT",
+                # products.desc was renamed to products.description
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT",
+            ]
+            for col in safe_cols:
+                try: cur.execute(col)
+                except Exception: pass
+        conn.commit()
+        logger.info("PostgreSQL schema ready ✓")
+    finally:
+        conn.close()
+
+
+def _init_db_sqlite():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT, status TEXT DEFAULT 'NEW',
-            full_name TEXT, phone TEXT, address TEXT,
-            lat REAL, lon REAL,
-            items TEXT, total INTEGER,
-            created_by_id INTEGER, created_by_name TEXT,
-            accepted_by_id INTEGER, accepted_by_name TEXT,
-            accepted_at TEXT, closed_at TEXT,
-            group_message_id INTEGER
-        )""")
-        for col in [
+        for tpl in _TABLES_SQL:
+            conn.execute(tpl.format(serial="INTEGER AUTOINCREMENT"))
+        # Safe migrations (OperationalError if column already exists)
+        safe_cols = [
             "ALTER TABLE orders ADD COLUMN store_id INTEGER",
             "ALTER TABLE orders ADD COLUMN target_chat_id INTEGER",
             "ALTER TABLE orders ADD COLUMN yandex_claim_id TEXT",
             "ALTER TABLE orders ADD COLUMN yandex_status TEXT",
             "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
             "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
-        ]:
-            try: conn.execute(col)
-            except sqlite3.OperationalError: pass
-
-        conn.execute("""CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            role TEXT DEFAULT 'user',
-            registered_at TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            username TEXT,
-            language_code TEXT,
-            photo_url TEXT,
-            onboarded INTEGER DEFAULT 0
-        )""")
-        for col in [
-            "ALTER TABLE users ADD COLUMN first_name TEXT",
-            "ALTER TABLE users ADD COLUMN last_name TEXT",
-            "ALTER TABLE users ADD COLUMN username TEXT",
-            "ALTER TABLE users ADD COLUMN language_code TEXT",
-            "ALTER TABLE users ADD COLUMN photo_url TEXT",
-            "ALTER TABLE users ADD COLUMN onboarded INTEGER DEFAULT 0",
-        ]:
-            try: conn.execute(col)
-            except sqlite3.OperationalError: pass
-
-        conn.execute("""CREATE TABLE IF NOT EXISTS stores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER UNIQUE,
-            name TEXT, type TEXT, emoji TEXT, bg_color TEXT
-        )""")
-
-        conn.execute("""CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_id INTEGER,
-            name TEXT, price INTEGER, desc TEXT, emoji TEXT, cat TEXT,
-            old_price INTEGER, discount_qty INTEGER, discount_end TEXT
-        )""")
-        
-        # Add new columns to existing products table if they don't exist
-        for col in [
             "ALTER TABLE products ADD COLUMN old_price INTEGER",
             "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
             "ALTER TABLE products ADD COLUMN discount_end TEXT",
-        ]:
-            try: conn.execute(col)
-            except sqlite3.OperationalError: pass
-
-        # Add ALL stores columns (safe — OperationalError silently ignored if column exists)
-        for col in [
+            "ALTER TABLE products ADD COLUMN description TEXT",
             "ALTER TABLE stores ADD COLUMN admin_id INTEGER",
             "ALTER TABLE stores ADD COLUMN name TEXT",
             "ALTER TABLE stores ADD COLUMN type TEXT",
@@ -148,77 +211,93 @@ def init_db():
             "ALTER TABLE stores ADD COLUMN description TEXT",
             "ALTER TABLE stores ADD COLUMN phone TEXT",
             "ALTER TABLE stores ADD COLUMN address TEXT",
-        ]:
+        ]
+        for col in safe_cols:
             try: conn.execute(col)
             except sqlite3.OperationalError: pass
-
-        # Ratings
-        conn.execute("""CREATE TABLE IF NOT EXISTS ratings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id INTEGER UNIQUE,
-            user_id INTEGER,
-            store_id INTEGER,
-            stars INTEGER,
-            comment TEXT,
-            created_at TEXT
-        )""")
-
-        # Subscriptions
-        conn.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_id INTEGER UNIQUE,
-            admin_id INTEGER,
-            plan TEXT DEFAULT 'free',
-            orders_this_month INTEGER DEFAULT 0,
-            billing_month TEXT,
-            next_billing TEXT,
-            created_at TEXT
-        )""")
-
-        # Payment transactions
-        conn.execute("""CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider TEXT,
-            provider_tx_id TEXT UNIQUE,
-            order_id INTEGER,
-            amount INTEGER,
-            state INTEGER DEFAULT 1,
-            created_at TEXT,
-            performed_at TEXT,
-            cancelled_at TEXT,
-            reason INTEGER
-        )""")
-
         conn.commit()
+        logger.info("SQLite schema ready ✓")
 
 
+# ── PostgreSQL helpers ──────────────────────────────────────────────────────
+def _pg_conn():
+    import psycopg2, psycopg2.extras
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+def _pg(sql: str) -> str:
+    """Convert SQLite ? placeholders to PostgreSQL %s"""
+    return sql.replace("?", "%s")
+
+# ── Unified DB API ───────────────────────────────────────────────────────────
 def db_fetchone(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(sql, params).fetchone()
-        return dict(row) if row else None
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
 
 
 def db_fetchall(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def db_execute(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(sql, params)
-        conn.commit()
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(sql, params)
+            conn.commit()
 
 
 def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None, target_chat_id=None):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
-        )
-        conn.commit()
-        return int(cur.lastrowid)
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (%s, 'NEW', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
+                )
+                oid = cur.fetchone()["id"]
+            conn.commit()
+            return int(oid)
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
+            )
+            conn.commit()
+            return int(cur.lastrowid)
 
 
 def get_order(oid):
@@ -230,13 +309,27 @@ def set_group_message_id(oid, mid):
 
 
 def try_accept_order(oid, cid, cname):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=? AND status='NEW'",
-            (cid, cname, now_iso(), oid)
-        )
-        conn.commit()
-        return cur.rowcount == 1
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=%s, accepted_by_name=%s, accepted_at=%s WHERE id=%s AND status='NEW'",
+                    (cid, cname, now_iso(), oid)
+                )
+                rows = cur.rowcount
+            conn.commit()
+            return rows == 1
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=? AND status='NEW'",
+                (cid, cname, now_iso(), oid)
+            )
+            conn.commit()
+            return cur.rowcount == 1
 
 
 def close_order(oid, status):
@@ -811,7 +904,7 @@ async def handle_api_data(request):
             "id": p['id'],
             "name": p['name'],
             "price": p['price'],
-            "desc": p['desc'],
+            "desc": p.get('description') or p.get('desc') or '',
             "emoji": p['emoji'],
             "cat": p['cat'],
             "store_id": p['store_id'],
@@ -883,30 +976,44 @@ async def handle_update_store(request):
         return web.json_response({"error": str(e)}, status=500)
 
 async def handle_update_product(request):
-    data = await request.json()
-    admin_id = data.get('admin_id')
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
-    if not store: return web.json_response({"error": "Store not found"}, status=400)
-    
-    p_id = data.get('id')
-    name = data.get('name')
-    price = data.get('price')
-    desc = data.get('desc', '')
-    emoji = data.get('emoji')
-    cat = data.get('cat')
-    old_price = data.get('old_price')
-    discount_qty = data.get('discount_qty')
-    discount_end = data.get('discount_end')
-    
-    if p_id:
-        db_execute("""UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? 
-                      WHERE id=? AND store_id=?""", 
-                   (name, price, desc, emoji, cat, old_price, discount_qty, discount_end, p_id, store['id']))
-    else:
-        db_execute("""INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end) 
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                   (store['id'], name, price, desc, emoji, cat, old_price, discount_qty, discount_end))
-    return web.json_response({"status": "ok"})
+    try:
+        data = await request.json()
+        admin_id = data.get('admin_id')
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        admin_id = int(admin_id)
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Do'kon topilmadi. Avval do'kon yarating."}, status=400)
+
+        p_id       = data.get('id')
+        name       = (data.get('name') or '').strip()
+        price      = int(data.get('price') or 0)
+        desc       = (data.get('desc') or data.get('description') or '').strip()
+        emoji      = (data.get('emoji') or '🍽️').strip()
+        cat        = (data.get('cat') or '').strip()
+        old_price  = data.get('old_price')
+        disc_qty   = data.get('discount_qty')
+        disc_end   = data.get('discount_end')
+
+        if not name:
+            return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
+
+        if p_id:
+            db_execute(
+                "UPDATE products SET name=?, price=?, description=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, p_id, store['id'])
+            )
+        else:
+            db_execute(
+                "INSERT INTO products (store_id, name, price, description, emoji, cat, old_price, discount_qty, discount_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end)
+            )
+        logger.info(f"Product saved: store={store['id']} name={name}")
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception(f"handle_update_product error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 async def handle_delete_product(request):
     data = await request.json()
