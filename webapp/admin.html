@@ -714,7 +714,8 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 const tg = window.Telegram.WebApp;
 tg.expand(); tg.ready();
 
-const ADMIN_ID = tg.initDataUnsafe?.user?.id || 0;
+// Telegram user ID — fallback to localStorage (set by index1.html onboarding)
+const ADMIN_ID = tg.initDataUnsafe?.user?.id || parseInt(localStorage.getItem('user_id') || '0');
 let storeData = null, products = [], orders = [], stats = null;
 let curPage = 'dash', orderFilter = 'all', prodFilter = 'all';
 let weeklyData = [], anPeriod = 'today';
@@ -783,6 +784,7 @@ async function loadAdminData() {
 }
 
 function showNoStoreSetup() {
+  const idInfo = ADMIN_ID ? `<div style="font-size:11px;color:var(--text3);margin-top:10px;font-family:monospace">ID: ${ADMIN_ID}</div>` : `<div style="font-size:11px;color:#C62828;margin-top:10px;font-weight:700">⚠️ Telegram ID aniqlanmadi. Iltimos botdan oching.</div>`;
   document.getElementById('statsGrid').innerHTML = `
     <div style="grid-column:1/-1;background:#fff;border-radius:20px;padding:28px 20px;text-align:center;box-shadow:var(--shadow)">
       <div style="font-size:52px;margin-bottom:12px">🏪</div>
@@ -796,6 +798,7 @@ function showNoStoreSetup() {
       <div style="background:#f5f5f5;border-radius:12px;padding:12px 16px;text-align:left;font-family:monospace;font-size:14px;color:var(--text)">
         /addproduct — mahsulot qo'shish
       </div>
+      ${idInfo}
     </div>`;
   const pg = document.getElementById('prodGrid'); if(pg) pg.innerHTML = `
     <div class="empty" style="grid-column:1/-1"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Botda /addproduct yozing</div></div>`;

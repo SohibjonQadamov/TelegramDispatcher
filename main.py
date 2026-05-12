@@ -819,13 +819,18 @@ async def handle_api_data(request):
 
 async def handle_admin_data(request):
     admin_id = request.query.get("admin_id")
-    if not admin_id: return web.json_response({"error": "admin_id required"}, status=400)
-    
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
+
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
     products = []
     if store:
         products = db_fetchall("SELECT * FROM products WHERE store_id=?", (store['id'],))
-        
+
     return web.json_response({"store": store, "products": products})
 
 async def handle_update_store(request):
@@ -894,16 +899,20 @@ async def handle_delete_product(request):
 async def handle_orders(request):
     """Buyurtmalar ro'yxati — admin paneli uchun."""
     admin_id = request.query.get("admin_id")
-    if not admin_id:
+    if not admin_id or admin_id == '0':
         return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
 
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
     if store:
         orders = db_fetchall(
             "SELECT * FROM orders WHERE store_id=? ORDER BY created_at DESC LIMIT 100",
             (store['id'],)
         )
-    elif int(admin_id) in ADMIN_IDS:
+    elif admin_id_int in ADMIN_IDS:
         orders = db_fetchall("SELECT * FROM orders ORDER BY created_at DESC LIMIT 100")
     else:
         orders = []
@@ -1556,10 +1565,14 @@ async def daily_report_loop(bot: "Bot"):
 
 async def handle_stats(request):
     admin_id = request.query.get("admin_id")
-    if not admin_id:
+    if not admin_id or admin_id == '0':
         return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
 
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
     store_cond = " AND store_id=?" if store else ""
     store_p = (store['id'],) if store else ()
 
