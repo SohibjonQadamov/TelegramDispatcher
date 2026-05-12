@@ -69,6 +69,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 .shim{background:linear-gradient(90deg,var(--bg3) 25%,var(--bg) 50%,var(--bg3) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:var(--rl)}
 
 /* ===== BOTTOM TAB BAR — floating pill (iOS 18 / Telegram style) ===== */
+/* Nav is outside #app — direct child of body so iOS backdrop-filter works */
 .bnav{
   position:fixed;
   bottom:calc(18px + var(--sb));
@@ -88,7 +89,12 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
   z-index:50;
   flex-shrink:0;
   gap:2px;
+  /* Hidden until app is ready */
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.36s;
 }
+.bnav.ready{opacity:1;pointer-events:all}
 [data-dark="1"] .bnav{background:rgba(18,18,20,.9);border-color:rgba(255,255,255,.08)}
 .nb{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -622,8 +628,11 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 
   </div>
 
-  <!-- BOTTOM TAB BAR -->
-  <nav class="bnav">
+
+</div>
+
+<!-- BOTTOM TAB BAR — outside #app so iOS backdrop-filter works correctly -->
+<nav class="bnav" id="mainNav">
     <button class="nb on" id="nb-home" onclick="showPg('home')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span id="nb-home-lbl">Asosiy</span>
@@ -643,8 +652,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       <span id="nb-profile-lbl">Profil</span>
     </button>
-  </nav>
-</div>
+</nav>
 
 <!-- CART -->
 <div id="cart-ov" class="gone">
@@ -967,8 +975,12 @@ window.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
       document.getElementById('splash').style.display = 'none';
       const app = document.getElementById('app');
+      const nav = document.getElementById('mainNav');
       app.classList.remove('gone');
-      requestAnimationFrame(() => requestAnimationFrame(() => app.classList.add('show')));
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        app.classList.add('show');
+        if (nav) nav.classList.add('ready');
+      }));
       loadData();
       startBanner();
       renderOrderHistory();
