@@ -762,6 +762,7 @@ async function loadAll() {
 async function loadAdminData() {
   try {
     const r = await fetch(`/api/admin_data?admin_id=${ADMIN_ID}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     storeData = d.store || null;
     products = d.products || [];
@@ -770,15 +771,40 @@ async function loadAdminData() {
       wb.style.display = 'inline-flex';
       document.getElementById('wbStoreEmoji').textContent = storeData.emoji || '🍔';
       document.getElementById('wbStoreName').textContent = storeData.name || '';
+    } else {
+      showNoStoreSetup();
     }
     renderProds();
     if (curPage === 'set') renderSettings();
-  } catch(e) { showToast('❌ Ma\'lumot yuklanmadi'); }
+  } catch(e) {
+    console.error('loadAdminData error:', e);
+    showNoStoreSetup();
+  }
+}
+
+function showNoStoreSetup() {
+  document.getElementById('statsGrid').innerHTML = `
+    <div style="grid-column:1/-1;background:#fff;border-radius:20px;padding:28px 20px;text-align:center;box-shadow:var(--shadow)">
+      <div style="font-size:52px;margin-bottom:12px">🏪</div>
+      <div style="font-size:18px;font-weight:800;margin-bottom:8px">Do'kon topilmadi</div>
+      <div style="font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:16px">
+        Botda quyidagi buyruqlarni yuboring:
+      </div>
+      <div style="background:#f5f5f5;border-radius:12px;padding:12px 16px;text-align:left;font-family:monospace;font-size:14px;color:var(--text);margin-bottom:8px">
+        /mystore — do'kon ochish
+      </div>
+      <div style="background:#f5f5f5;border-radius:12px;padding:12px 16px;text-align:left;font-family:monospace;font-size:14px;color:var(--text)">
+        /addproduct — mahsulot qo'shish
+      </div>
+    </div>`;
+  document.getElementById('prodBlock').innerHTML = `
+    <div class="empty"><div class="empty-em">📦</div><div class="empty-t">Mahsulot yo'q</div><div class="empty-s">Botda /addproduct yozing</div></div>`;
 }
 
 async function loadStats() {
   try {
     const r = await fetch(`/api/stats?admin_id=${ADMIN_ID}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     stats = await r.json();
     weeklyData = stats.weekly || [];
     renderDash();
