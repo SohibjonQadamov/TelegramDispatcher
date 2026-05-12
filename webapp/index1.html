@@ -984,37 +984,42 @@ function setLang(l) {
 }
 
 // ── SPLASH / INIT ──
+function showMainApp() {
+  try {
+    const splash = document.getElementById('splash');
+    const app    = document.getElementById('app');
+    const nav    = document.getElementById('mainNav');
+    if (splash) { splash.classList.add('out'); splash.style.display = 'none'; }
+    if (app)    { app.classList.remove('gone'); app.classList.add('show'); }
+    if (nav)    { nav.classList.add('ready'); }
+    try { loadData(); } catch(e) {}
+    try { startBanner(); } catch(e) {}
+    try { renderOrderHistory(); } catch(e) {}
+  } catch(e) {}
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   try { applyDark(); } catch(e) {}
   try { applyLang(); } catch(e) {}
-  const u = tg.initDataUnsafe?.user;
-  if (u) {
-    const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
-    document.getElementById('profName').textContent = name || 'Foydalanuvchi';
-    document.getElementById('profUser').textContent = u.username ? '@' + u.username : '';
-    if (u.photo_url) {
-      const av = document.getElementById('profAv');
-      av.innerHTML = `<img src="${u.photo_url}" alt="avatar" onerror="this.parentNode.innerHTML='<span>${(name[0]||'👤').toUpperCase()}</span>'">`;
-    } else {
-      document.getElementById('profAvi').textContent = (name[0] || '👤').toUpperCase();
+  try {
+    const u = tg.initDataUnsafe?.user;
+    if (u) {
+      const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+      const profName = document.getElementById('profName');
+      const profUser = document.getElementById('profUser');
+      const profAvi  = document.getElementById('profAvi');
+      const profAv   = document.getElementById('profAv');
+      if (profName) profName.textContent = name || 'Foydalanuvchi';
+      if (profUser) profUser.textContent = u.username ? '@' + u.username : '';
+      if (u.photo_url && profAv) {
+        profAv.innerHTML = `<img src="${u.photo_url}" alt="" style="width:100%;height:100%;object-fit:cover" onerror="this.remove()">`;
+      } else if (profAvi) {
+        profAvi.textContent = (name?.[0] || '👤').toUpperCase();
+      }
     }
-  }
-  setTimeout(() => {
-    document.getElementById('splash').classList.add('out');
-    setTimeout(() => {
-      document.getElementById('splash').style.display = 'none';
-      const app = document.getElementById('app');
-      const nav = document.getElementById('mainNav');
-      app.classList.remove('gone');
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        app.classList.add('show');
-        if (nav) nav.classList.add('ready');
-      }));
-      loadData();
-      startBanner();
-      renderOrderHistory();
-    }, 480);
-  }, 1900);
+  } catch(e) {}
+  // Show app after splash animation (800ms = fast enough, not too quick)
+  setTimeout(showMainApp, 800);
 });
 
 // ── DATA ──
