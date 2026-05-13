@@ -656,10 +656,23 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
     </div>
     <div class="modal-body">
       <input type="hidden" id="mProdId">
+      <input type="hidden" id="mPhotoUrl">
       <div class="form-grp">
-        <label class="form-lbl">Emoji</label>
+        <label class="form-lbl">Rasm (ixtiyoriy)</label>
+        <div id="mPhotoBox" onclick="document.getElementById('mPhotoFile').click()" style="border:2px dashed var(--border);border-radius:14px;height:140px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;cursor:pointer;background:var(--bg);overflow:hidden;position:relative">
+          <span id="mPhotoIcon" style="font-size:36px">📷</span>
+          <span id="mPhotoLbl" style="font-size:13px;color:var(--text2)">Rasm tanlang</span>
+        </div>
+        <input type="file" id="mPhotoFile" accept="image/*" style="display:none" onchange="onPhotoSelected(this)">
+      </div>
+      <div class="form-grp">
+        <label class="form-lbl">Emoji (rasm bo'lmasa)</label>
         <input class="form-inp" id="mEmoji" placeholder="🍔" maxlength="4">
       </div>
+      <label style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg);border-radius:12px;cursor:pointer">
+        <input type="checkbox" id="mFeatured" style="width:18px;height:18px">
+        <span style="font-size:14px;font-weight:600">⭐ Top mahsulot (asosiy ekranda chiqsin)</span>
+      </label>
       <div class="form-grp">
         <label class="form-lbl">Mahsulot nomi *</label>
         <input class="form-inp" id="mName" placeholder="Masalan: Wagyu Burger">
@@ -1123,10 +1136,51 @@ function openModal(prod=null) {
   document.getElementById('mDiscEnd').value = prod ? (prod.discount_end||'').slice(0,10) : '';
   document.getElementById('mCat').value = prod ? prod.cat||'' : '';
   document.getElementById('mDesc').value = prod ? prod.desc||'' : '';
+  document.getElementById('mFeatured').checked = !!(prod && prod.is_featured);
+  document.getElementById('mPhotoUrl').value = prod?.photo_url || '';
+  // Photo preview
+  const box = document.getElementById('mPhotoBox');
+  const icon = document.getElementById('mPhotoIcon');
+  const lbl = document.getElementById('mPhotoLbl');
+  if (prod?.photo_url) {
+    box.style.backgroundImage = `url("${prod.photo_url}")`;
+    box.style.backgroundSize = 'cover';
+    box.style.backgroundPosition = 'center';
+    if (icon) icon.style.display = 'none';
+    if (lbl) lbl.textContent = 'O\'zgartirish uchun bosing';
+  } else {
+    box.style.backgroundImage = '';
+    if (icon) icon.style.display = 'block';
+    if (lbl) lbl.textContent = 'Rasm tanlang';
+  }
   document.getElementById('modalTitle').textContent = prod ? '✏️ Mahsulotni tahrirlash' : '➕ Mahsulot qo\'shish';
   calcDisc();
   document.getElementById('modal-ov').classList.remove('gone');
   document.getElementById('modalSheet').classList.remove('closing');
+}
+
+function onPhotoSelected(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  if (file.size > 500 * 1024) {
+    showToast('⚠️ Rasm 500KB dan kichik bo\'lsin');
+    input.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = e => {
+    const dataUrl = e.target.result;
+    document.getElementById('mPhotoUrl').value = dataUrl;
+    const box = document.getElementById('mPhotoBox');
+    const icon = document.getElementById('mPhotoIcon');
+    const lbl = document.getElementById('mPhotoLbl');
+    box.style.backgroundImage = `url("${dataUrl}")`;
+    box.style.backgroundSize = 'cover';
+    box.style.backgroundPosition = 'center';
+    if (icon) icon.style.display = 'none';
+    if (lbl) lbl.textContent = 'O\'zgartirish uchun bosing';
+  };
+  reader.readAsDataURL(file);
 }
 
 function editProd(id) {
@@ -1164,6 +1218,8 @@ async function saveProd() {
       old_price:    parseInt(document.getElementById('mOldPrice')?.value)||null,
       discount_qty: parseInt(document.getElementById('mDiscQty')?.value)||null,
       discount_end: document.getElementById('mDiscEnd')?.value || null,
+      photo_url:    document.getElementById('mPhotoUrl')?.value || null,
+      is_featured:  document.getElementById('mFeatured')?.checked ? 1 : 0,
     };
     const r = await fetch('/api/product', {
       method: 'POST',
@@ -1631,6 +1687,37 @@ function renderSettings() {
       </button>
     </div>
 
+    <!-- ===== PROMO CODES ===== -->
+    <div class="card" style="display:flex;flex-direction:column;gap:12px">
+      <div class="card-title">🎟️ Promo kodlar</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.4">Chegirma kodlari yarating va mijozlaringizga tarqating</div>
+      <div class="input-row">
+        <div class="form-grp">
+          <label class="form-lbl">Kod *</label>
+          <input class="form-inp" id="pmCode" placeholder="WELCOME20" style="text-transform:uppercase">
+        </div>
+        <div class="form-grp">
+          <label class="form-lbl">Chegirma %</label>
+          <input class="form-inp" id="pmPct" type="number" placeholder="20" inputmode="numeric" min="0" max="100">
+        </div>
+      </div>
+      <div class="input-row">
+        <div class="form-grp">
+          <label class="form-lbl">Min buyurtma</label>
+          <input class="form-inp" id="pmMin" type="number" placeholder="50000" inputmode="numeric">
+        </div>
+        <div class="form-grp">
+          <label class="form-lbl">Limit (0=cheksiz)</label>
+          <input class="form-inp" id="pmMaxUses" type="number" placeholder="100" inputmode="numeric">
+        </div>
+      </div>
+      <button class="btn btn-red btn-full" onclick="createPromo()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Promo kod yaratish
+      </button>
+      <div id="promoList" style="display:flex;flex-direction:column;gap:8px;margin-top:8px"></div>
+    </div>
+
     <div class="card" style="background:var(--dark);border:none">
       <div style="font-size:12px;color:rgba(255,255,255,0.5);text-align:center;line-height:1.7">
         <span style="font-size:20px">⚡</span><br>
@@ -1804,6 +1891,87 @@ async function saveHours() {
   }
 }
 
+// ─── PROMO CODES ────────────────────────────────────────────────────────────
+async function createPromo() {
+  if (!ADMIN_ID) { showToast('❌ ID=0'); return; }
+  const code = (document.getElementById('pmCode')?.value || '').trim().toUpperCase();
+  const pct  = parseInt(document.getElementById('pmPct')?.value) || 0;
+  const min_order = parseInt(document.getElementById('pmMin')?.value) || 0;
+  const max_uses  = parseInt(document.getElementById('pmMaxUses')?.value) || 0;
+  if (!code) { showToast('⚠️ Kod kiriting'); return; }
+  if (pct <= 0) { showToast('⚠️ Chegirma % kiriting (1-100)'); return; }
+  showToast('⏳ Yaratilmoqda...');
+  try {
+    const r = await fetch('/api/promo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_id: ADMIN_ID, code, discount_pct: pct, min_order, max_uses})
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(text);
+    showToast(`✅ "${code}" yaratildi!`);
+    document.getElementById('pmCode').value = '';
+    document.getElementById('pmPct').value = '';
+    document.getElementById('pmMin').value = '';
+    document.getElementById('pmMaxUses').value = '';
+    loadPromos();
+  } catch(e) {
+    showToast('❌ ' + (e.message || 'Xatolik'));
+  }
+}
+
+async function loadPromos() {
+  if (!ADMIN_ID) return;
+  try {
+    const r = await fetch(`/api/promos?admin_id=${ADMIN_ID}`);
+    const d = await r.json();
+    const list = d.promos || [];
+    const el = document.getElementById('promoList');
+    if (!el) return;
+    if (!list.length) {
+      el.innerHTML = '<div style="font-size:13px;color:var(--text3);text-align:center;padding:14px">Hali promo kod yo\'q</div>';
+      return;
+    }
+    el.innerHTML = list.map(p => `
+      <div style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg);border-radius:14px;border:1.5px dashed var(--border)">
+        <div style="flex:1;min-width:0">
+          <div style="font-family:monospace;font-size:16px;font-weight:800;color:var(--red);letter-spacing:1px">${p.code}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px">
+            -${p.discount_pct||0}%
+            ${p.min_order ? ` · min ${(p.min_order||0).toLocaleString()} so'm` : ''}
+            ${p.max_uses ? ` · ${p.used_count||0}/${p.max_uses}` : ` · ${p.used_count||0} marta ishlatilgan`}
+          </div>
+        </div>
+        <button onclick="copyPromo('${p.code}')" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">📋</button>
+        <button onclick="deletePromo(${p.id})" style="background:var(--red-l);border:none;border-radius:8px;padding:6px 10px;font-size:14px;color:var(--red);cursor:pointer">🗑️</button>
+      </div>
+    `).join('');
+  } catch(e) {
+    console.error('loadPromos:', e);
+  }
+}
+
+function copyPromo(code) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(code).then(() => showToast(`📋 "${code}" nusxalandi`));
+  } else {
+    showToast(`Kod: ${code}`);
+  }
+}
+
+async function deletePromo(id) {
+  if (!confirm('Bu promo kodni o\'chirasizmi?')) return;
+  try {
+    await fetch('/api/delete_promo', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({admin_id: ADMIN_ID, id})
+    });
+    showToast('🗑️ O\'chirildi');
+    loadPromos();
+  } catch(e) { showToast('❌ Xatolik'); }
+}
+
 // ── NAVIGATION ──
 let curPageId = 'dash';
 function navTo(page) {
@@ -1821,7 +1989,7 @@ function navTo(page) {
   if (fab) fab.classList.toggle('gone', page !== 'prods');
   // Re-render the target page with latest data
   if (page === 'an')     try { renderAnalytics(); } catch(e){}
-  if (page === 'set')    try { renderSettings();  } catch(e){}
+  if (page === 'set')    try { renderSettings(); loadPromos(); } catch(e){}
   if (page === 'orders') try { renderOrders();    } catch(e){}
   if (page === 'prods')  try { renderProds();     } catch(e){}
   if (page === 'dash')   try { renderDash(); renderRecentOrders(); } catch(e){}

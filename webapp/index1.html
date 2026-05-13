@@ -507,6 +507,26 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
       </div>
       <div style="padding:0 16px" id="orderHist"></div>
 
+      <!-- Referral -->
+      <div style="padding:18px 16px 6px">
+        <div style="font-size:20px;font-weight:700;letter-spacing:-.3px">🎁 Do'stingizni taklif qiling</div>
+        <div style="font-size:13px;color:var(--lbl2);margin-top:3px">Har bir do'st uchun 10 000 so'm bonus</div>
+      </div>
+      <div style="padding:0 16px">
+        <div style="background:linear-gradient(135deg,#FF6B35,#C62828);border-radius:18px;padding:18px;color:#fff;box-shadow:0 8px 24px rgba(198,40,40,.25);position:relative;overflow:hidden">
+          <div style="position:absolute;top:-30px;right:-30px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.1)"></div>
+          <div style="position:relative;z-index:1">
+            <div style="font-size:42px;margin-bottom:8px">🎁</div>
+            <div style="font-size:13px;opacity:.9;margin-bottom:2px">Taklif qilingan do'stlar</div>
+            <div style="font-size:32px;font-weight:800;letter-spacing:-.5px" id="refCount">0</div>
+            <div style="font-size:13px;opacity:.9;margin-top:6px">Bonus balansi: <b id="refBonus">0 so'm</b></div>
+            <button onclick="shareReferral()" style="margin-top:12px;width:100%;padding:12px;background:#fff;color:var(--acc);border:none;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font)">
+              📤 Havolani ulashish
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Settings -->
       <div style="height:14px"></div>
       <div class="ios-section">
@@ -701,11 +721,13 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
     <div class="c-scroll" id="cItems"></div>
     <div class="c-ft">
       <div class="promo-row">
-        <input class="promo-inp" id="promoInp">
-        <button class="promo-btn" id="promoBtn">QO'SHISH</button>
+        <input class="promo-inp" id="promoInp" placeholder="Promo kod (masalan: WELCOME20)" style="text-transform:uppercase">
+        <button class="promo-btn" id="promoBtn" onclick="applyPromo()">QO'SHISH</button>
       </div>
+      <div id="promoMsg" style="font-size:12px;margin-top:-8px;margin-bottom:10px;padding:0 4px"></div>
       <div class="price-rows">
         <div class="price-row"><span class="pr-lbl" id="foodLbl">Taomlar narxi</span><span class="pr-val" id="prFood">0 so'm</span></div>
+        <div class="price-row" id="discRow" style="display:none"><span class="pr-lbl" style="color:#2E7D32">🎟️ Chegirma</span><span class="pr-val" id="prDisc" style="color:#2E7D32">0</span></div>
         <div class="price-row"><span class="pr-lbl" id="delLbl">Yetkazib berish</span><span class="pr-val" id="prDel">15,000 so'm</span></div>
         <div class="price-row total"><span class="pr-lbl" id="totalLbl">Jami</span><span class="pr-val" id="prTotal">15,000 so'm</span></div>
       </div>
@@ -1130,6 +1152,55 @@ function pickRegion(r) {
   loadData();
 }
 
+// ── REFERRAL ──
+let referralData = null;
+
+async function loadReferral() {
+  const uid = parseInt(localStorage.getItem('user_id') || '0') || tg.initDataUnsafe?.user?.id;
+  if (!uid) return;
+  try {
+    const r = await fetch('/api/referral?user_id=' + uid);
+    referralData = await r.json();
+    const cnt = document.getElementById('refCount');
+    const bon = document.getElementById('refBonus');
+    if (cnt) cnt.textContent = referralData.invited_count || 0;
+    if (bon) bon.textContent = (referralData.bonus_balance || 0).toLocaleString() + ' so\'m';
+  } catch(e) { console.error('loadReferral:', e); }
+}
+
+function shareReferral() {
+  if (!referralData?.share_url) {
+    showToast('⏳ Yuklanmoqda...');
+    loadReferral().then(() => referralData?.share_url && shareReferral());
+    return;
+  }
+  // Open Telegram's native share dialog
+  try {
+    if (tg.openTelegramLink) {
+      tg.openTelegramLink(referralData.share_url);
+    } else {
+      window.open(referralData.share_url, '_blank');
+    }
+    hap.success();
+  } catch(e) {
+    // Fallback: copy to clipboard
+    const link = referralData.share_url.split('url=').pop();
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(decodeURIComponent(link)).then(() =>
+        showToast('📋 Havola nusxalandi'));
+    }
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.remove('gone');
+  clearTimeout(window._toastTm);
+  window._toastTm = setTimeout(() => t.classList.add('gone'), 2500);
+}
+
 // ── PRODUCT DETAIL ──
 function openProdDetail(productId) {
   const p = pMap[productId];
@@ -1137,9 +1208,13 @@ function openProdDetail(productId) {
   const s = stores.find(x => x.id == p.store_id);
   const hasDisc = p.old_price && p.old_price > p.price;
   const discPct = hasDisc ? Math.round((1 - p.price / p.old_price) * 100) : 0;
+  const heroBg = p.photo_url
+    ? `background-image:url('${p.photo_url}');background-size:cover;background-position:center`
+    : 'background:linear-gradient(135deg, var(--acc), #8B0000)';
   document.getElementById('prodContent').innerHTML = `
-    <div style="position:relative;height:200px;border-radius:18px;background:linear-gradient(135deg, var(--acc), #8B0000);display:flex;align-items:center;justify-content:center;margin-top:14px;overflow:hidden">
-      <div style="font-size:96px;filter:drop-shadow(0 6px 16px rgba(0,0,0,.3))">${p.emoji||'🍽️'}</div>
+    <div style="position:relative;height:220px;border-radius:18px;${heroBg};display:flex;align-items:center;justify-content:center;margin-top:14px;overflow:hidden">
+      ${p.photo_url ? '' : `<div style="font-size:96px;filter:drop-shadow(0 6px 16px rgba(0,0,0,.3))">${p.emoji||'🍽️'}</div>`}
+      ${p.is_featured ? `<div style="position:absolute;bottom:14px;left:14px;background:#FFD600;color:#000;padding:5px 10px;border-radius:10px;font-weight:800;font-size:11px;letter-spacing:.5px">⭐ TOP MAHSULOT</div>` : ''}
       ${hasDisc ? `<div style="position:absolute;top:14px;right:14px;background:#FFD600;color:#000;padding:6px 12px;border-radius:14px;font-weight:800;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.2)">-${discPct}%</div>` : ''}
       <button onclick="closeProdDetail()" style="position:absolute;top:14px;left:14px;width:36px;height:36px;border-radius:50%;background:rgba(0,0,0,.4);color:#fff;border:none;font-size:18px;cursor:pointer;backdrop-filter:blur(8px)">✕</button>
     </div>
@@ -1285,9 +1360,12 @@ function piHTML(p, i=0) {
 
   const tagHTML = tags.length ? `<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${tags.map(tg=>`<span class="pi-tag ${tg.k}">${tg.v}</span>`).join('')}</div>` : '';
 
-  return `<div class="pi" style="animation-delay:${i*.06}s;cursor:pointer" onclick="openProdDetail(${p.id})">
-    <div class="pi-box">
-      ${p.emoji||'🍽️'}
+  const boxStyle = p.photo_url ? `background-image:url('${p.photo_url}');background-size:cover;background-position:center;font-size:0` : '';
+  const featBadge = p.is_featured ? `<div style="position:absolute;top:4px;left:4px;background:#FFD600;color:#000;font-size:10px;font-weight:800;padding:2px 6px;border-radius:6px;z-index:1">⭐</div>` : '';
+  return `<div class="pi" style="animation-delay:${i*.06}s;cursor:pointer;position:relative" onclick="openProdDetail(${p.id})">
+    ${featBadge}
+    <div class="pi-box" style="${boxStyle}">
+      ${p.photo_url ? '' : (p.emoji||'🍽️')}
       ${pct > 0 ? `<div class="pi-disc-badge">-${pct}%</div>` : ''}
     </div>
     <div class="pi-info">
@@ -1407,9 +1485,26 @@ function closeCart() {
 
 function clearCart() { cart=[]; updBadge(); renderCItems(); refreshProds(); updateStoreCB(); }
 
+// Active promo state — set by applyPromo(), used in renderCItems/placeOrder
+let activePromo = null;
+
 function renderCItems() {
   const foodTotal = cart.reduce((s,i) => s+i.price*i.qty, 0);
-  const grand = foodTotal + (cart.length ? DELIVERY_FEE : 0);
+  // Recompute promo discount if active (% changes with food total)
+  let discount = 0;
+  if (activePromo && cart.length) {
+    const pct = activePromo.discount_pct || 0;
+    const amt = activePromo.discount_amount || 0;
+    discount = Math.max(Math.round(foodTotal * pct / 100), amt);
+    // Clear promo if min_order no longer met
+    if (activePromo.min_order && foodTotal < activePromo.min_order) {
+      discount = 0;
+      activePromo = null;
+      const msg = document.getElementById('promoMsg');
+      if (msg) { msg.textContent = `⚠️ Min buyurtma: ${(activePromo?.min_order||0).toLocaleString()}`; msg.style.color = '#C62828'; }
+    }
+  }
+  const grand = Math.max(0, foodTotal - discount) + (cart.length ? DELIVERY_FEE : 0);
   const n = cart.reduce((s,i)=>s+i.qty, 0);
   document.getElementById('cCnt').textContent = n + ' ta';
   document.getElementById('cTimer').style.display = cart.length ? 'flex' : 'none';
@@ -1442,18 +1537,111 @@ function renderCItems() {
   document.getElementById('prFood').textContent = foodTotal.toLocaleString() + ' so\'m';
   document.getElementById('prDel').textContent = cart.length ? DELIVERY_FEE.toLocaleString() + ' so\'m' : '0 so\'m';
   document.getElementById('prTotal').textContent = grand.toLocaleString() + ' so\'m';
+  // Discount row
+  const discRow = document.getElementById('discRow');
+  const prDisc  = document.getElementById('prDisc');
+  if (discRow && prDisc) {
+    if (discount > 0) {
+      discRow.style.display = 'flex';
+      prDisc.textContent = '-' + discount.toLocaleString() + ' so\'m';
+    } else {
+      discRow.style.display = 'none';
+    }
+  }
   document.getElementById('ordBtn').disabled = !cart.length;
+}
+
+async function applyPromo() {
+  const inp = document.getElementById('promoInp');
+  const msg = document.getElementById('promoMsg');
+  const code = (inp?.value || '').trim().toUpperCase();
+  if (!code) {
+    activePromo = null;
+    if (msg) msg.textContent = '';
+    renderCItems();
+    return;
+  }
+  const foodTotal = cart.reduce((s,i) => s+i.price*i.qty, 0);
+  const sid = cart[0]?.store_id || curStore;
+  const uid = parseInt(localStorage.getItem('user_id') || '0') || tg.initDataUnsafe?.user?.id || null;
+  if (msg) { msg.textContent = '⏳ Tekshirilmoqda...'; msg.style.color = 'var(--lbl2)'; }
+  try {
+    const r = await fetch('/api/validate_promo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ code, store_id: sid, user_id: uid, order_total: foodTotal })
+    });
+    const d = await r.json();
+    if (d.valid) {
+      activePromo = d;
+      if (msg) {
+        msg.textContent = `✅ -${d.discount_pct||0}% chegirma qo'llandi! (-${(d.discount||0).toLocaleString()} so'm)`;
+        msg.style.color = '#2E7D32';
+      }
+      hap.success();
+    } else {
+      activePromo = null;
+      if (msg) {
+        msg.textContent = '❌ ' + (d.error || 'Yaroqsiz kod');
+        msg.style.color = '#C62828';
+      }
+    }
+  } catch(e) {
+    activePromo = null;
+    if (msg) { msg.textContent = '❌ Tarmoq xatosi'; msg.style.color = '#C62828'; }
+  }
+  renderCItems();
+}
+
+function isStoreOpen(store) {
+  if (!store) return true;
+  try {
+    const now = new Date();
+    const isWeekend = now.getDay() === 0 || now.getDay() === 6;
+    const hours = isWeekend ? (store.hours_weekend || '10:00-23:00')
+                            : (store.hours_weekday || '09:00-22:00');
+    const [fromStr, toStr] = hours.split('-');
+    if (!fromStr || !toStr) return true;
+    const [fh, fm] = fromStr.split(':').map(Number);
+    const [th, tm] = toStr.split(':').map(Number);
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const start = fh * 60 + (fm||0);
+    const end   = th * 60 + (tm||0);
+    return cur >= start && cur <= end;
+  } catch(e) { return true; }
 }
 
 function placeOrder() {
   if (!cart.length) return;
   const foodTotal = cart.reduce((s,i)=>s+i.price*i.qty, 0);
-  const total = foodTotal + DELIVERY_FEE;
-  const items = cart.map(i=>`${i.emoji||''} ${i.name} x${i.qty}`).join(', ');
   const store_id = cart[0]?.store_id ?? null;
-  tg.sendData(JSON.stringify({action:'order', items, total, store_id}));
+  const store = stores.find(s => s.id == store_id);
+
+  // Check working hours
+  if (store && !isStoreOpen(store)) {
+    const hrs = store.hours_weekday || '09:00-22:00';
+    showToast(`🔒 Restoran yopiq. Ish vaqti: ${hrs}`);
+    return;
+  }
+
+  // Apply promo discount
+  let discount = 0;
+  if (activePromo) {
+    const pct = activePromo.discount_pct || 0;
+    const amt = activePromo.discount_amount || 0;
+    discount = Math.max(Math.round(foodTotal * pct / 100), amt);
+  }
+  const total = Math.max(0, foodTotal - discount) + DELIVERY_FEE;
+  const items = cart.map(i=>`${i.emoji||''} ${i.name} x${i.qty}`).join(', ');
+  const payload = {action:'order', items, total, store_id};
+  if (activePromo) {
+    payload.promo_code = activePromo.code;
+    payload.discount = discount;
+  }
+  tg.sendData(JSON.stringify(payload));
   hap.success();
-  cart=[]; updBadge(); closeCart(); updateStoreCB();
+  cart=[]; activePromo=null;
+  updBadge(); closeCart(); updateStoreCB();
   document.getElementById('succ-ov').classList.remove('gone');
   setTimeout(() => tg.close(), 3500);
 }
@@ -1571,7 +1759,7 @@ function showPg(pg) {
   document.querySelectorAll('.nb').forEach(b => b.classList.remove('on'));
   const nb = document.getElementById('nb-'+pg);
   if (nb) nb.classList.add('on');
-  if (pg === 'profile') renderOrderHistory();
+  if (pg === 'profile') { renderOrderHistory(); loadReferral(); }
   updateStoreCB();
   hap.light();
 }

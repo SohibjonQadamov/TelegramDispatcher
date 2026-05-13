@@ -141,6 +141,39 @@ _TABLES_SQL = [
         created_at TEXT, performed_at TEXT,
         cancelled_at TEXT, reason INTEGER
     )""",
+    # promo_codes  ← Marketing tool
+    """CREATE TABLE IF NOT EXISTS promo_codes (
+        id {id_def},
+        code TEXT UNIQUE,
+        store_id INTEGER,
+        discount_pct INTEGER DEFAULT 0,
+        discount_amount INTEGER DEFAULT 0,
+        min_order INTEGER DEFAULT 0,
+        max_uses INTEGER DEFAULT 0,
+        used_count INTEGER DEFAULT 0,
+        expires_at TEXT,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        created_by BIGINT
+    )""",
+    # promo_uses — track per-user usage
+    """CREATE TABLE IF NOT EXISTS promo_uses (
+        id {id_def},
+        promo_id INTEGER,
+        user_id BIGINT,
+        order_id INTEGER,
+        used_at TEXT
+    )""",
+    # referrals — user acquisition
+    """CREATE TABLE IF NOT EXISTS referrals (
+        id {id_def},
+        referrer_id BIGINT,
+        referred_id BIGINT UNIQUE,
+        bonus_amount INTEGER DEFAULT 10000,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        rewarded_at TEXT
+    )""",
 ]
 
 
@@ -198,6 +231,11 @@ def _init_db_pg():
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS district TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_balance INTEGER DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured INTEGER DEFAULT 0",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
@@ -265,6 +303,11 @@ def _init_db_sqlite():
             "ALTER TABLE users ADD COLUMN region TEXT",
             "ALTER TABLE users ADD COLUMN city TEXT",
             "ALTER TABLE users ADD COLUMN district TEXT",
+            "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+            "ALTER TABLE users ADD COLUMN bonus_balance INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN phone TEXT",
+            "ALTER TABLE products ADD COLUMN photo_url TEXT",
+            "ALTER TABLE products ADD COLUMN is_featured INTEGER DEFAULT 0",
             # products — ALL columns
             "ALTER TABLE products ADD COLUMN store_id INTEGER",
             "ALTER TABLE products ADD COLUMN name TEXT",
@@ -595,6 +638,30 @@ async def start(msg: Message, state: FSMContext):
 
     uid = msg.from_user.id
     user = db_fetchone("SELECT * FROM users WHERE user_id=?", (uid,))
+
+    # Check for referral code in /start payload: /start ref<user_id>
+    referrer_id = None
+    try:
+        parts = (msg.text or '').split(maxsplit=1)
+        if len(parts) > 1 and parts[1].startswith('ref'):
+            ref_uid = int(parts[1][3:])
+            if ref_uid and ref_uid != uid:
+                referrer_id = ref_uid
+    except (ValueError, IndexError):
+        pass
+
+    # Record referral if new user
+    if referrer_id and (not user or not user.get('onboarded')):
+        try:
+            existing_ref = db_fetchone("SELECT id FROM referrals WHERE referred_id=?", (uid,))
+            if not existing_ref:
+                db_execute(
+                    "INSERT INTO referrals (referrer_id, referred_id, bonus_amount, status, created_at) VALUES (?, ?, 10000, 'pending', ?)",
+                    (referrer_id, uid, now_iso())
+                )
+                logger.info(f"Referral recorded: {referrer_id} → {uid}")
+        except Exception as e:
+            logger.warning(f"Referral insert failed: {e}")
 
     if not user or not user.get('onboarded'):
         # Yangi foydalanuvchi — onboarding yuborish
@@ -978,6 +1045,9 @@ async def handle_api_data(request):
             "address": s.get('address') or '',
             "phone": s.get('phone') or '',
             "description": s.get('description') or '',
+            "hours_weekday": s.get('hours_weekday') or '09:00-22:00',
+            "hours_weekend": s.get('hours_weekend') or '10:00-23:00',
+            "is_open": s.get('is_open', 1),
             "lat": s.get('lat'),
             "lon": s.get('lon'),
         })
@@ -1000,7 +1070,9 @@ async def handle_api_data(request):
             "store_id": p['store_id'],
             "old_price": p['old_price'],
             "discount_qty": p['discount_qty'],
-            "discount_end": p['discount_end']
+            "discount_end": p['discount_end'],
+            "photo_url": p.get('photo_url') or '',
+            "is_featured": p.get('is_featured') or 0,
         })
 
     return web.json_response({"stores": stores, "menuItems": menuItems})
@@ -1097,19 +1169,21 @@ async def handle_update_product(request):
         old_price  = data.get('old_price') or None
         disc_qty   = data.get('discount_qty') or None
         disc_end   = data.get('discount_end') or None
+        photo_url  = (data.get('photo_url') or '').strip() or None
+        is_feat    = 1 if data.get('is_featured') else 0
 
         if not name:
             return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
 
         if p_id:
             db_execute(
-                "UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? WHERE id=? AND store_id=?",
-                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, int(p_id), store['id'])
+                "UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, int(p_id), store['id'])
             )
         else:
             db_execute(
-                "INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end)
+                "INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat)
             )
         logger.info(f"Product saved: store={store['id']} name={name}")
         return web.json_response({"status": "ok"})
@@ -1136,12 +1210,173 @@ async def handle_user_region(request):
         if not uid:
             return web.json_response({"error": "user_id required"}, status=400)
         uid = int(uid)
-        # Try update; if user doesn't exist, ignore (region in localStorage is enough)
         db_execute("UPDATE users SET region=? WHERE user_id=?", (region, uid))
         return web.json_response({"status": "ok", "region": region})
     except Exception as e:
         logger.exception(f"handle_user_region: {e}")
         return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── PROMO CODES ──────────────────────────────────────────────────────────────
+async def handle_create_promo(request):
+    """Admin creates a promo code."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Avval do'kon yarating"}, status=400)
+
+        code = (data.get('code') or '').strip().upper()
+        if not code or len(code) < 3:
+            return web.json_response({"error": "Promo kod 3+ harfdan iborat bo'lsin"}, status=400)
+
+        discount_pct    = int(data.get('discount_pct') or 0)
+        discount_amount = int(data.get('discount_amount') or 0)
+        min_order       = int(data.get('min_order') or 0)
+        max_uses        = int(data.get('max_uses') or 0)
+        expires_at      = (data.get('expires_at') or '').strip() or None
+
+        # Check uniqueness
+        existing = db_fetchone("SELECT id FROM promo_codes WHERE code=?", (code,))
+        if existing:
+            return web.json_response({"error": "Bu kod allaqachon mavjud"}, status=400)
+
+        db_execute(
+            "INSERT INTO promo_codes (code, store_id, discount_pct, discount_amount, min_order, max_uses, used_count, expires_at, active, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?)",
+            (code, store['id'], discount_pct, discount_amount, min_order, max_uses, expires_at, now_iso(), admin_id)
+        )
+        logger.info(f"Promo created: {code} by admin {admin_id}")
+        return web.json_response({"status": "ok", "code": code})
+    except Exception as e:
+        logger.exception(f"create_promo: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_list_promos(request):
+    """List promos for an admin's store."""
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"promos": []})
+    try:
+        admin_id = int(admin_id)
+    except ValueError:
+        return web.json_response({"promos": []})
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"promos": []})
+    promos = db_fetchall(
+        "SELECT * FROM promo_codes WHERE store_id=? ORDER BY created_at DESC",
+        (store['id'],)
+    )
+    return web.json_response({"promos": promos})
+
+
+async def handle_delete_promo(request):
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        promo_id = int(data.get('id') or 0)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=400)
+        db_execute("DELETE FROM promo_codes WHERE id=? AND store_id=?", (promo_id, store['id']))
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_validate_promo(request):
+    """User validates a promo code at checkout."""
+    try:
+        data = await request.json()
+        code = (data.get('code') or '').strip().upper()
+        store_id = data.get('store_id')
+        user_id = data.get('user_id')
+        order_total = int(data.get('order_total') or 0)
+
+        if not code:
+            return web.json_response({"valid": False, "error": "Kod kiriting"}, status=400)
+
+        promo = db_fetchone("SELECT * FROM promo_codes WHERE code=? AND active=1", (code,))
+        if not promo:
+            return web.json_response({"valid": False, "error": "Bunday promo kod yo'q"})
+
+        # Store match (None store_id = global, applies to all)
+        if promo['store_id'] and store_id and int(promo['store_id']) != int(store_id):
+            return web.json_response({"valid": False, "error": "Bu promo boshqa do'kon uchun"})
+
+        # Expires
+        if promo['expires_at']:
+            try:
+                exp = datetime.fromisoformat(promo['expires_at'].replace('Z', '+00:00'))
+                if datetime.now(timezone.utc) > exp:
+                    return web.json_response({"valid": False, "error": "Promo muddati tugagan"})
+            except Exception:
+                pass
+
+        # Max uses
+        if promo['max_uses'] and (promo['used_count'] or 0) >= promo['max_uses']:
+            return web.json_response({"valid": False, "error": "Promo limiti tugagan"})
+
+        # Min order
+        if promo['min_order'] and order_total < promo['min_order']:
+            return web.json_response({
+                "valid": False,
+                "error": f"Minimal buyurtma {promo['min_order']:,} so'm"
+            })
+
+        # Per-user limit (only once per user)
+        if user_id:
+            try:
+                used = db_fetchone(
+                    "SELECT id FROM promo_uses WHERE promo_id=? AND user_id=?",
+                    (promo['id'], int(user_id))
+                )
+                if used:
+                    return web.json_response({"valid": False, "error": "Siz bu kodni ishlatib bo'lgansiz"})
+            except Exception:
+                pass
+
+        # Calculate discount
+        pct = promo['discount_pct'] or 0
+        amt = promo['discount_amount'] or 0
+        discount = max(int(order_total * pct / 100), amt)
+
+        return web.json_response({
+            "valid": True,
+            "promo_id": promo['id'],
+            "code": promo['code'],
+            "discount": discount,
+            "discount_pct": pct,
+            "discount_amount": amt,
+        })
+    except Exception as e:
+        logger.exception(f"validate_promo: {e}")
+        return web.json_response({"valid": False, "error": str(e)}, status=500)
+
+
+# ─── REFERRAL ─────────────────────────────────────────────────────────────────
+async def handle_referral_link(request):
+    """Get user's referral code/stats."""
+    uid = request.query.get("user_id")
+    if not uid:
+        return web.json_response({"error": "user_id required"}, status=400)
+    try:
+        uid = int(uid)
+    except ValueError:
+        return web.json_response({"error": "bad user_id"}, status=400)
+
+    invited = db_fetchall("SELECT * FROM referrals WHERE referrer_id=?", (uid,))
+    user = db_fetchone("SELECT bonus_balance FROM users WHERE user_id=?", (uid,))
+    return web.json_response({
+        "user_id": uid,
+        "invited_count": len(invited),
+        "bonus_balance": (user or {}).get('bonus_balance', 0),
+        "share_url": f"https://t.me/share/url?url=https://t.me/{os.getenv('BOT_USERNAME', 'zakaz_manager_uz_bot')}?start=ref{uid}"
+    })
 
 
 async def handle_orders(request):
@@ -1168,6 +1403,15 @@ async def handle_orders(request):
     return web.json_response({"orders": orders})
 
 
+STATUS_MESSAGES = {
+    'IN_PROGRESS': "🔧 <b>Buyurtmangiz #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda. Tez orada tayyor bo'ladi.",
+    'READY':       "✅ <b>Buyurtma #{oid} tayyor!</b>\n\nKuryer yetkazib berishga chiqyapti.",
+    'IN_DELIVERY': "🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nTez orada sizga yetkazib beriladi. 📍",
+    'DELIVERED':   "🎉 <b>Buyurtma #{oid} yetkazib berildi!</b>\n\nBahomi bering. Yaxshi ovqatlanishingizni tilaymiz!",
+    'CANCELLED':   "❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nSavollar bo'lsa qo'llab-quvvatlash bilan bog'laning.",
+}
+
+
 async def handle_order_status(request):
     data = await request.json()
     order_id = data.get('order_id')
@@ -1179,6 +1423,16 @@ async def handle_order_status(request):
         db_execute("UPDATE orders SET status=?, closed_at=? WHERE id=?", (status, now_iso(), order_id))
     else:
         db_execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+
+    # ── Notify user via bot ──
+    try:
+        order = db_fetchone("SELECT created_by_id FROM orders WHERE id=?", (order_id,))
+        if order and order.get('created_by_id') and status in STATUS_MESSAGES:
+            msg = STATUS_MESSAGES[status].format(oid=order_id)
+            await bot.send_message(int(order['created_by_id']), msg, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"order status notify failed: {e}")
+
     return web.json_response({"status": "ok"})
 
 
@@ -1892,6 +2146,13 @@ async def main():
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
     app.router.add_post('/api/user_region', handle_user_region)
+    # Promo codes
+    app.router.add_post('/api/promo', handle_create_promo)
+    app.router.add_get('/api/promos', handle_list_promos)
+    app.router.add_post('/api/delete_promo', handle_delete_promo)
+    app.router.add_post('/api/validate_promo', handle_validate_promo)
+    # Referrals
+    app.router.add_get('/api/referral', handle_referral_link)
     app.router.add_get('/api/orders', handle_orders)
     app.router.add_get('/api/stats', handle_stats)
     app.router.add_post('/api/order_status', handle_order_status)
