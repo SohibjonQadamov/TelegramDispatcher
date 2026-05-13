@@ -587,6 +587,32 @@ async def leave_courier(msg: Message):
 
 # ================= ORDER FLOW =================
 # ================= WEB APP =================
+def admin_order_kb(oid: int) -> InlineKeyboardMarkup:
+    """Inline keyboard sent to store admin when a new order arrives."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"adm_accept:{oid}"),
+            InlineKeyboardButton(text="❌ Bekor",         callback_data=f"adm_cancel:{oid}"),
+        ],
+        [
+            InlineKeyboardButton(text="🚖 Yandex kuryer chaqirish", callback_data=f"adm_yandex:{oid}"),
+        ],
+    ])
+
+
+def admin_order_kb_accepted(oid: int) -> InlineKeyboardMarkup:
+    """Keyboard after admin accepts the order."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚖 Yandex kuryer chaqirish", callback_data=f"adm_yandex:{oid}"),
+        ],
+        [
+            InlineKeyboardButton(text="🎉 Yetkazildi", callback_data=f"adm_done:{oid}"),
+            InlineKeyboardButton(text="❌ Bekor",       callback_data=f"adm_cancel:{oid}"),
+        ],
+    ])
+
+
 @router.message(F.web_app_data)
 async def webapp_handler(msg: Message, state: FSMContext):
     if not msg.from_user: return
@@ -597,7 +623,7 @@ async def webapp_handler(msg: Message, state: FSMContext):
 
     action = data.get("action")
 
-    # Onboarding tugadi — foydalanuvchini ro'yxatdan o'tkazamiz
+    # ── Onboarding ──
     if action == "registered":
         uid = msg.from_user.id
         db_execute(
@@ -608,23 +634,95 @@ async def webapp_handler(msg: Message, state: FSMContext):
         )
         name = msg.from_user.first_name or "do'st"
         await msg.answer(
-            f"✅ <b>Xush kelibsiz, {name}!</b>\n\n"
-            f"Profil muvaffaqiyatli yaratildi. Endi buyurtma berishingiz mumkin! 🍔",
-            reply_markup=main_kb(uid),
-            parse_mode="HTML"
+            f"✅ <b>Xush kelibsiz, {name}!</b>\n\nEndi buyurtma berishingiz mumkin! 🍔",
+            reply_markup=main_kb(uid), parse_mode="HTML"
         )
         return
 
-    # Oddiy buyurtma
-    items = data.get("items", "")
-    total = data.get("total", 0)
-    store_id = data.get("store_id")
+    # ── Buyurtma: to'liq ma'lumot mini-app'dan keladi ──
+    if action != "order":
+        return
 
-    await state.update_data(webapp_items=items, webapp_total=total, store_id=store_id)
-    await state.set_state(OrderState.waiting_name)
+    uid       = msg.from_user.id
+    full_name = msg.from_user.full_name or msg.from_user.first_name or "Mehmon"
+    phone     = (data.get("phone") or "").strip()
+    address   = (data.get("address") or "").strip()
+    lat       = data.get("lat")
+    lon       = data.get("lon")
+    items     = data.get("items", "")
+    total     = int(data.get("total") or 0)
+    store_id  = data.get("store_id")
+    promo     = data.get("promo_code", "")
+    discount  = int(data.get("discount") or 0)
+
+    if not items or not phone or not address:
+        await msg.answer("❌ Buyurtma ma'lumotlari to'liq emas. Qaytadan urinib ko'ring.")
+        return
+
+    # Save phone to user profile
+    if phone:
+        db_execute("UPDATE users SET phone=? WHERE user_id=?", (phone, uid))
+
+    # Find store + admin
+    store = None
+    target_chat = GROUP_CHAT_ID
+    if store_id:
+        store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+        if store and store.get("admin_id"):
+            target_chat = int(store["admin_id"])
+
+    # Save order to DB
+    oid = create_order(full_name, phone, address, lat, lon, items, total, uid, full_name, store_id, target_chat)
+    order = get_order(oid)
+
+    # ── Format message for admin ──
+    store_name = (store.get("name") or "Do'kon") if store else "Do'kon"
+    store_emoji = (store.get("emoji") or "🏪") if store else "🏪"
+    loc_line = ""
+    if lat and lon:
+        loc_line = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+    promo_line = f"\n🎟️ Promo: {promo} (-{discount:,} so'm)" if promo else ""
+
+    admin_txt = (
+        f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
+        f"{store_emoji} {store_name}\n\n"
+        f"👤 <b>{full_name}</b>\n"
+        f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+        f"📍 {address}{loc_line}{promo_line}\n\n"
+        f"🛒 {items}\n"
+        f"💰 <b>Jami: {total:,} so'm</b>"
+    )
+
+    try:
+        sent = await msg.bot.send_message(
+            target_chat, admin_txt,
+            parse_mode="HTML",
+            reply_markup=admin_order_kb(oid)
+        )
+        # If GPS, also send location pin right after
+        if lat and lon:
+            try:
+                await msg.bot.send_location(target_chat, lat, lon, reply_to_message_id=sent.message_id)
+            except Exception:
+                pass
+        set_group_message_id(oid, sent.message_id)
+    except Exception as e:
+        logger.exception(f"Admin notify failed: {e}")
+        # Fallback: send to group
+        try:
+            if target_chat != GROUP_CHAT_ID:
+                await msg.bot.send_message(GROUP_CHAT_ID, admin_txt, parse_mode="HTML",
+                                           reply_markup=admin_order_kb(oid))
+        except Exception:
+            pass
+
+    # ── Confirm to user ──
     await msg.answer(
-        f"📱 {items}\n💰 Jami: {total:,} so'm\n\n👤 Ismingizni yuboring:",
-        reply_markup=ReplyKeyboardRemove()
+        f"✅ <b>Buyurtma #{oid} qabul qilindi!</b>\n\n"
+        f"🛒 {items}\n"
+        f"💰 Jami: {total:,} so'm\n\n"
+        f"Do'kon tasdiqlashi bilanoq xabar beramiz 📱",
+        reply_markup=main_kb(uid), parse_mode="HTML"
     )
 
 
@@ -825,6 +923,160 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
         logger.exception("Xato")
         if cb.message: await cb.message.answer(f"❌ Xato: {e}")
         await state.clear()
+
+
+# ─── ADMIN ORDER CALLBACKS ────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("adm_accept:"))
+async def adm_accept(cb: CallbackQuery):
+    """Store admin accepts the order."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Buyurtma topilmadi", show_alert=True); return
+
+    db_execute("UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=?",
+               (cb.from_user.id, cb.from_user.full_name, now_iso(), oid))
+
+    # Update message keyboard
+    try:
+        await cb.message.edit_reply_markup(reply_markup=admin_order_kb_accepted(oid))
+    except Exception: pass
+
+    await cb.answer("✅ Buyurtma qabul qilindi!")
+
+    # Notify customer
+    uid = order.get("created_by_id")
+    if uid:
+        try:
+            await cb.bot.send_message(int(uid),
+                f"🔧 <b>Buyurtma #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda. Tez orada yetkaziladi 🍔",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_cancel:"))
+async def adm_cancel(cb: CallbackQuery):
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi"); return
+
+    db_execute("UPDATE orders SET status='CANCELLED', closed_at=? WHERE id=?", (now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("❌ Bekor qilindi")
+
+    # Notify customer
+    uid = order.get("created_by_id")
+    if uid:
+        try:
+            await cb.bot.send_message(int(uid),
+                f"❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nKechirasiz, tez orada qayta urinib ko'ring.",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_done:"))
+async def adm_done(cb: CallbackQuery):
+    oid = int(cb.data.split(":")[1])
+    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("🎉 Yetkazildi!")
+
+    order = get_order(oid)
+    uid = order.get("created_by_id") if order else None
+    if uid:
+        try:
+            await cb.bot.send_message(int(uid),
+                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n\nRahmat! Yaxshi ovqatlanishingizni tilaymiz 😊",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_yandex:"))
+async def adm_yandex(cb: CallbackQuery):
+    """Admin requests Yandex Go courier for this order."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Buyurtma topilmadi", show_alert=True); return
+
+    if not YANDEX_DELIVERY_TOKEN:
+        await cb.answer("❌ Yandex token sozlanmagan.\nRender > Environment > YANDEX_DELIVERY_TOKEN", show_alert=True)
+        return
+
+    # Get store GPS for pickup
+    store_id = order.get("store_id")
+    pickup_lat, pickup_lon = None, None
+    store_address = "Do'kon manzili"
+    if store_id:
+        s = db_fetchone("SELECT lat,lon,address,name FROM stores WHERE id=?", (store_id,))
+        if s:
+            pickup_lat  = s.get("lat")
+            pickup_lon  = s.get("lon")
+            store_address = s.get("address") or s.get("name") or "Do'kon"
+
+    delivery_lat = order.get("lat")
+    delivery_lon = order.get("lon")
+
+    if not (pickup_lat and pickup_lon and delivery_lat and delivery_lon):
+        await cb.answer(
+            "❌ GPS koordinatalari yo'q.\n"
+            "Do'kon va buyurtma GPS lokatsiyasi bo'lishi kerak.",
+            show_alert=True
+        )
+        return
+
+    await cb.answer("⏳ Yandex kuryer so'rovnomasi yuborilmoqda...")
+
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "callback_url": "",
+            "comment": f"Buyurtma #{oid}: {order.get('items','')}",
+            "items": [{"title": "Ovqat yetkazib berish", "size": "S", "quantity": 1, "price": order.get("total", 0), "payment_method": "already_paid"}],
+            "route_points": [
+                {
+                    "visit_order": 1,
+                    "address": {"fullname": store_address, "coordinates": [pickup_lon, pickup_lat]},
+                    "contact": {"name": "Restoran", "phone": "+99890000000"},
+                    "type": "source"
+                },
+                {
+                    "visit_order": 2,
+                    "address": {"fullname": order.get("address","Manzil"), "coordinates": [delivery_lon, delivery_lat]},
+                    "contact": {"name": order.get("full_name","Mijoz"), "phone": order.get("phone", "+99890000000")},
+                    "type": "destination"
+                }
+            ],
+            "skip_door_to_door": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept-Language": "uz"
+        }
+        try:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={oid}_{int(time.time())}",
+                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                result = await resp.json()
+                if resp.status in (200, 201):
+                    claim_id = result.get("id", "")
+                    db_execute("UPDATE orders SET yandex_claim_id=?, yandex_status='new' WHERE id=?",
+                               (claim_id, oid))
+                    await cb.message.answer(
+                        f"🚖 <b>Yandex kuryer chaqirildi!</b>\n"
+                        f"Buyurtma #{oid}\n"
+                        f"Claim ID: <code>{claim_id}</code>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    err = result.get("message") or str(result)
+                    await cb.message.answer(f"❌ Yandex xato: {err}")
+        except Exception as e:
+            logger.exception(f"Yandex claim error: {e}")
+            await cb.message.answer(f"❌ Yandex ulanish xatosi: {e}")
 
 
 # ================= CALLBACKS =================
