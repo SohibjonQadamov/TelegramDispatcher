@@ -165,6 +165,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 /* Product detail overlay */
 #prod-ov{display:flex}
 #prod-ov.gone{display:none !important}
+/* Order info overlay */
+#order-info-ov{display:flex}
+#order-info-ov.gone{display:none !important}
 .reg-back{position:absolute;inset:0;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);animation:bdIn .22s ease}
 .reg-sheet{position:relative;z-index:1;background:var(--bg2);border-radius:24px 24px 0 0;padding-bottom:var(--sb);animation:sheetUp .32s cubic-bezier(.32,.72,0,1);max-height:80vh;overflow-y:auto}
 .reg-hd{padding:18px 20px 12px;font-size:20px;font-weight:700;letter-spacing:-.3px;display:flex;justify-content:space-between;align-items:center}
@@ -724,19 +727,54 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
     <div class="c-scroll" id="cItems"></div>
     <div class="c-ft">
       <div class="promo-row">
-        <input class="promo-inp" id="promoInp" placeholder="Promo kod (masalan: WELCOME20)" style="text-transform:uppercase">
+        <input class="promo-inp" id="promoInp" placeholder="Promo kod kiriting..." style="text-transform:uppercase">
         <button class="promo-btn" id="promoBtn" onclick="applyPromo()">QO'SHISH</button>
+        <button id="promoClear" onclick="clearPromo()" style="display:none;width:34px;height:34px;border-radius:50%;background:var(--fill2);border:none;cursor:pointer;font-size:16px;color:var(--lbl2);flex-shrink:0">✕</button>
       </div>
       <div id="promoMsg" style="font-size:12px;margin-top:-8px;margin-bottom:10px;padding:0 4px"></div>
       <div class="price-rows">
         <div class="price-row"><span class="pr-lbl" id="foodLbl">Taomlar narxi</span><span class="pr-val" id="prFood">0 so'm</span></div>
         <div class="price-row" id="discRow" style="display:none"><span class="pr-lbl" style="color:#2E7D32">🎟️ Chegirma</span><span class="pr-val" id="prDisc" style="color:#2E7D32">0</span></div>
-        <div class="price-row"><span class="pr-lbl" id="delLbl">Yetkazib berish</span><span class="pr-val" id="prDel">15,000 so'm</span></div>
-        <div class="price-row total"><span class="pr-lbl" id="totalLbl">Jami</span><span class="pr-val" id="prTotal">15,000 so'm</span></div>
+        <div class="price-row total"><span class="pr-lbl" id="totalLbl">Jami</span><span class="pr-val" id="prTotal">0 so'm</span></div>
       </div>
       <button class="ord-btn" id="ordBtn" onclick="placeOrder()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
         <span id="ordBtnTxt">Buyurtma berish</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ORDER INFO SHEET (phone + address) -->
+<div id="order-info-ov" class="gone" style="position:fixed;inset:0;z-index:290;flex-direction:column;justify-content:flex-end">
+  <div onclick="closeOrderInfo()" style="position:absolute;inset:0;background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:bdIn .22s ease"></div>
+  <div style="position:relative;z-index:1;background:var(--bg2);border-radius:28px 28px 0 0;padding:0 0 calc(20px + var(--sb));animation:sheetUp .36s cubic-bezier(.32,.72,0,1)">
+    <div style="padding:12px 0 0;display:flex;justify-content:center"><div style="width:36px;height:4px;background:var(--sep2);border-radius:2px"></div></div>
+    <div style="padding:16px 20px 0">
+      <div style="font-size:20px;font-weight:800;letter-spacing:-.3px;margin-bottom:4px">📦 Yetkazib berish</div>
+      <div style="font-size:13px;color:var(--lbl2);margin-bottom:18px">Telefon va manzilni kiriting</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--lbl2);display:block;margin-bottom:6px">📞 Telefon *</label>
+          <input id="orderPhone" type="tel" inputmode="tel" placeholder="+998 90 123 45 67"
+            style="width:100%;padding:14px;background:var(--fill2);border:1.5px solid var(--sep);border-radius:14px;font-size:16px;font-family:var(--font);color:var(--lbl);outline:none;box-sizing:border-box"
+            onfocus="this.style.borderColor='var(--acc)'" onblur="this.style.borderColor='var(--sep)'">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--lbl2);display:block;margin-bottom:6px">📍 Manzil *</label>
+          <div style="position:relative">
+            <input id="orderAddress" type="text" placeholder="Ko'cha, uy raqami, mo'ljal"
+              style="width:100%;padding:14px 48px 14px 14px;background:var(--fill2);border:1.5px solid var(--sep);border-radius:14px;font-size:15px;font-family:var(--font);color:var(--lbl);outline:none;box-sizing:border-box"
+              onfocus="this.style.borderColor='var(--acc)'" onblur="this.style.borderColor='var(--sep)'">
+            <button onclick="pickOrderLocation()" title="GPS" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:20px;padding:4px">📡</button>
+          </div>
+          <div id="orderLocHint" style="font-size:11px;color:var(--lbl3);margin-top:4px;padding:0 2px"></div>
+        </div>
+      </div>
+      <button onclick="submitOrder()" id="submitOrderBtn"
+        style="margin-top:18px;width:100%;padding:16px;border:none;border-radius:16px;background:var(--acc);color:#fff;font-size:16px;font-weight:700;cursor:pointer;font-family:var(--font);box-shadow:0 6px 20px rgba(198,40,40,.35);display:flex;align-items:center;justify-content:center;gap:8px">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        Buyurtmani tasdiqlash
       </button>
     </div>
   </div>
@@ -887,7 +925,7 @@ const hap = {
 // ── STATE ──
 let stores=[], menu={}, cart=[], curPg='home', curStore=null, curMenuCat='all', curCat='all';
 const pMap={};
-let DELIVERY_FEE = 15000;
+let DELIVERY_FEE = 0; // Set per-store when store opens; 0 = no delivery fee display
 
 // ── I18N ──
 const T = {
@@ -1507,7 +1545,7 @@ function renderCItems() {
       if (msg) { msg.textContent = `⚠️ Min buyurtma: ${(activePromo?.min_order||0).toLocaleString()}`; msg.style.color = '#C62828'; }
     }
   }
-  const grand = Math.max(0, foodTotal - discount) + (cart.length ? DELIVERY_FEE : 0);
+  const grand = Math.max(0, foodTotal - discount);
   const n = cart.reduce((s,i)=>s+i.qty, 0);
   document.getElementById('cCnt').textContent = n + ' ta';
   document.getElementById('cTimer').style.display = cart.length ? 'flex' : 'none';
@@ -1538,7 +1576,6 @@ function renderCItems() {
     el.innerHTML = itemsHTML + recsHTML + splitHTML;
   }
   document.getElementById('prFood').textContent = foodTotal.toLocaleString() + ' so\'m';
-  document.getElementById('prDel').textContent = cart.length ? DELIVERY_FEE.toLocaleString() + ' so\'m' : '0 so\'m';
   document.getElementById('prTotal').textContent = grand.toLocaleString() + ' so\'m';
   // Discount row
   const discRow = document.getElementById('discRow');
@@ -1552,6 +1589,18 @@ function renderCItems() {
     }
   }
   document.getElementById('ordBtn').disabled = !cart.length;
+}
+
+function clearPromo() {
+  activePromo = null;
+  const inp = document.getElementById('promoInp');
+  const msg = document.getElementById('promoMsg');
+  const clr = document.getElementById('promoClear');
+  if (inp) inp.value = '';
+  if (msg) { msg.textContent = ''; }
+  if (clr) clr.style.display = 'none';
+  renderCItems();
+  hap.light();
 }
 
 async function applyPromo() {
@@ -1577,6 +1626,8 @@ async function applyPromo() {
     const d = await r.json();
     if (d.valid) {
       activePromo = d;
+      const clr = document.getElementById('promoClear');
+      if (clr) clr.style.display = 'flex';
       if (msg) {
         msg.textContent = `✅ -${d.discount_pct||0}% chegirma qo'llandi! (-${(d.discount||0).toLocaleString()} so'm)`;
         msg.style.color = '#2E7D32';
@@ -1614,39 +1665,94 @@ function isStoreOpen(store) {
   } catch(e) { return true; }
 }
 
+// GPS coords picked in order info modal
+let orderLat = null, orderLon = null;
+
 function placeOrder() {
   if (!cart.length) return;
-  const foodTotal = cart.reduce((s,i)=>s+i.price*i.qty, 0);
   const store_id = cart[0]?.store_id ?? null;
   const store = stores.find(s => s.id == store_id);
-
-  // Check working hours
   if (store && !isStoreOpen(store)) {
-    const hrs = store.hours_weekday || '09:00-22:00';
+    const isWE = new Date().getDay() === 0 || new Date().getDay() === 6;
+    const hrs = isWE ? (store.hours_weekend||'10:00-23:00') : (store.hours_weekday||'09:00-22:00');
     showToast(`🔒 Restoran yopiq. Ish vaqti: ${hrs}`);
     return;
   }
+  // Pre-fill phone from localStorage if saved
+  const savedPhone = localStorage.getItem('orderPhone') || '';
+  const savedAddr  = localStorage.getItem('orderAddress') || '';
+  const phoneEl = document.getElementById('orderPhone');
+  const addrEl  = document.getElementById('orderAddress');
+  if (phoneEl && !phoneEl.value) phoneEl.value = savedPhone;
+  if (addrEl  && !addrEl.value)  addrEl.value  = savedAddr;
+  orderLat = null; orderLon = null;
+  document.getElementById('orderLocHint').textContent = '';
+  document.getElementById('order-info-ov').classList.remove('gone');
+  hap.light();
+}
 
-  // Apply promo discount
+function closeOrderInfo() {
+  document.getElementById('order-info-ov').classList.add('gone');
+}
+
+function pickOrderLocation() {
+  const hint = document.getElementById('orderLocHint');
+  hint.textContent = '⏳ GPS aniqlanmoqda...';
+  if (!navigator.geolocation) { hint.textContent = '❌ GPS qo\'llab-quvvatlanmaydi'; return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      orderLat = pos.coords.latitude;
+      orderLon = pos.coords.longitude;
+      hint.textContent = `✅ GPS: ${orderLat.toFixed(4)}, ${orderLon.toFixed(4)}`;
+      hint.style.color = '#2E7D32';
+    },
+    err => { hint.textContent = '❌ GPS xato: ' + err.message; hint.style.color = '#C62828'; },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+}
+
+function submitOrder() {
+  const phone = (document.getElementById('orderPhone')?.value || '').trim();
+  const addr  = (document.getElementById('orderAddress')?.value || '').trim();
+  if (!phone) { showToast('⚠️ Telefon raqamini kiriting!'); document.getElementById('orderPhone')?.focus(); return; }
+  if (!addr)  { showToast('⚠️ Manzilni kiriting!'); document.getElementById('orderAddress')?.focus(); return; }
+
+  // Save for next time
+  localStorage.setItem('orderPhone', phone);
+  localStorage.setItem('orderAddress', addr);
+
+  const foodTotal = cart.reduce((s,i)=>s+i.price*i.qty, 0);
+  const store_id = cart[0]?.store_id ?? null;
   let discount = 0;
   if (activePromo) {
     const pct = activePromo.discount_pct || 0;
     const amt = activePromo.discount_amount || 0;
     discount = Math.max(Math.round(foodTotal * pct / 100), amt);
   }
-  const total = Math.max(0, foodTotal - discount) + DELIVERY_FEE;
+  const total = Math.max(0, foodTotal - discount);
   const items = cart.map(i=>`${i.emoji||''} ${i.name} x${i.qty}`).join(', ');
-  const payload = {action:'order', items, total, store_id};
+  const payload = {
+    action: 'order', items, total, store_id,
+    phone, address: addr,
+    lat: orderLat, lon: orderLon,
+  };
   if (activePromo) {
     payload.promo_code = activePromo.code;
     payload.discount = discount;
   }
-  tg.sendData(JSON.stringify(payload));
+
+  const btn = document.getElementById('submitOrderBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Yuborilmoqda...'; }
+
+  try {
+    tg.sendData(JSON.stringify(payload));
+  } catch(e) {}
   hap.success();
   cart=[]; activePromo=null;
+  closeOrderInfo();
   updBadge(); closeCart(); updateStoreCB();
   document.getElementById('succ-ov').classList.remove('gone');
-  setTimeout(() => tg.close(), 3500);
+  setTimeout(() => { try { tg.close(); } catch(e) {} }, 3500);
 }
 
 // ── SEARCH ──
