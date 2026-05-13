@@ -971,33 +971,70 @@ function updateOrderCounts() {
 function orderCardHTML(o, compact=false) {
   const st = STATUS[o.status] || STATUS.NEW;
   const dt = o.created_at ? new Date(o.created_at).toLocaleString('uz',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
-  let items = [];
-  try { items = JSON.parse(o.items || '[]'); } catch(e) {
-    items = (o.items||'').split(',').filter(Boolean).map(s => ({name:s.trim(), qty:1, price:0}));
+
+  // Parse items — may be JSON array or plain text like "🍔 Burger x2, 🥤 Cola x1"
+  let itemsParsed = [];
+  try { itemsParsed = JSON.parse(o.items || '[]'); } catch(e) { itemsParsed = []; }
+
+  // Build items display
+  let itemsDisplay = '';
+  if (!compact) {
+    if (itemsParsed.length) {
+      itemsDisplay = `<div class="oc-items-list">${
+        itemsParsed.map(it => {
+          const qty   = it.qty  || 1;
+          const price = it.price || 0;
+          const name  = it.name || String(it);
+          const em    = it.emoji || '🍽️';
+          return `<div class="oc-item-row">
+            <span>${em} <b>${name}</b> × ${qty}</span>
+            <span style="font-weight:700">${(price*qty).toLocaleString()} so'm</span>
+          </div>`;
+        }).join('')
+      }</div>`;
+    } else if (o.items) {
+      // Fallback: plain text items (e.g. "🍔 Burger x2, 🥤 Cola x1")
+      itemsDisplay = `<div class="oc-items-list" style="font-size:13px;color:var(--text)">${o.items}</div>`;
+    }
   }
 
-  const nextAct = NEXT_ACTION[o.status];
+  // GPS / location button — opens Yandex Go
+  const hasGPS = o.lat && o.lon;
+  const yandexGoUrl = hasGPS
+    ? `https://taxi.yandex.com/route?end-lat=${o.lat}&end-lon=${o.lon}&tariff=econom`
+    : '';
+
+  const locationBtn = hasGPS
+    ? `<a href="${yandexGoUrl}" target="_blank"
+         style="display:inline-flex;align-items:center;gap:5px;padding:7px 12px;background:#FC3F1D;color:#fff;border-radius:10px;font-size:12px;font-weight:700;text-decoration:none">
+         🚖 Yandex Go
+       </a>`
+    : '';
+
   const isActive = o.status !== 'DELIVERED' && o.status !== 'CANCELLED';
-  const yandexBtn = !compact && isActive && o.lat && o.lon ? (
-    o.yandex_claim_id
-      ? `<button class="oc-act-btn" style="background:#FC3F1D22;color:#FC3F1D;gap:4px" onclick="openYandexStatus(${o.id})">
-           🚕 ${yandexStatusLabel(o.yandex_status)}
-         </button>`
-      : `<button class="oc-act-btn" style="background:#FC3F1D22;color:#FC3F1D" onclick="yandexOrder(${o.id})">
-           🚕 Yandex kuryer
-         </button>`
-  ) : '';
+  const nextAct  = NEXT_ACTION[o.status];
+
   const actBtns = compact ? '' : `
-    <div class="oc-actions">
+    <div class="oc-actions" style="flex-wrap:wrap;gap:6px">
       ${nextAct ? `<button class="oc-act-btn ${nextAct.cls}" onclick="updateOrderStatus(${o.id},'${nextAct.next}')">${nextAct.label}</button>` : ''}
-      ${yandexBtn}
+      ${locationBtn}
       ${isActive ? `<button class="oc-act-btn oc-act-cancel" onclick="updateOrderStatus(${o.id},'CANCELLED')">Bekor</button>` : ''}
     </div>`;
 
-  const itemsHTML = compact ? '' : items.length ? `
-    <div class="oc-items-list">
-      ${items.map(it => `<div class="oc-item-row"><span>${it.emoji||'🍽️'} ${it.name||it} × ${it.qty||1}</span><span style="font-weight:700">${((it.price||0)*(it.qty||1)).toLocaleString()} so'm</span></div>`).join('')}
-    </div>` : `<div class="oc-items-list" style="font-size:12px;color:var(--text2)">${o.items||''}</div>`;
+  // Address row — if GPS available show map link too
+  const addrRow = o.address
+    ? `<div class="oc-addr">
+         <span>📍</span>
+         <span style="flex:1">${o.address}</span>
+         ${hasGPS ? `<a href="https://maps.google.com/?q=${o.lat},${o.lon}" target="_blank"
+              style="font-size:11px;color:var(--blue);text-decoration:none;flex-shrink:0">🗺 Xarita</a>` : ''}
+       </div>`
+    : (hasGPS
+        ? `<div class="oc-addr"><span>📍</span>
+             <a href="https://maps.google.com/?q=${o.lat},${o.lon}" target="_blank"
+                style="color:var(--blue);text-decoration:none">GPS: ${Number(o.lat).toFixed(4)}, ${Number(o.lon).toFixed(4)}</a>
+           </div>`
+        : '');
 
   return `<div class="order-card ${st.cls}">
     <div class="oc-top">
@@ -1007,15 +1044,15 @@ function orderCardHTML(o, compact=false) {
       </div>
       <span class="badge ${st.badge}">${st.icon} ${st.label}</span>
     </div>
-    ${o.address ? `<div class="oc-addr"><span>📍</span><span>${o.address}</span></div>` : ''}
-    ${itemsHTML}
+    ${addrRow}
+    ${itemsDisplay}
     <div class="oc-bot">
       <span class="oc-total">${Number(o.total||0).toLocaleString()} so'm</span>
       <div style="display:flex;align-items:center;gap:8px">
         ${o.phone ? `<a href="tel:${o.phone}" style="font-size:12px;font-weight:700;color:var(--blue);text-decoration:none">📞 ${o.phone}</a>` : ''}
-        ${actBtns}
       </div>
     </div>
+    ${actBtns}
   </div>`;
 }
 

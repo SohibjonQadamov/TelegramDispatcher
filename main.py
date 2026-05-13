@@ -485,18 +485,9 @@ def main_kb(uid=None):
         [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index1.html"))]
     ]
 
-    # Admin tugmalari
+    # Admin panel — store owner ko'radi
     if uid and (is_admin(uid) or db_fetchone("SELECT id FROM stores WHERE admin_id=?", (uid,))):
         rows.append([KeyboardButton(text="⚙️ Boshqaruv", web_app=WebAppInfo(url=WEBAPP_URL + "/admin.html"))])
-    else:
-        # Oddiy foydalanuvchilar uchun kuryerlik
-        if uid:
-            role = get_user_role(uid)
-            if role == 'courier':
-                rows.append([KeyboardButton(text="🚗 Kuryer panel")])
-                rows.append([KeyboardButton(text="🔴 Kuryerlikdan chiqish")])
-            else:
-                rows.append([KeyboardButton(text="🚗 Kuryer bo'lish")])
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -679,16 +670,19 @@ async def webapp_handler(msg: Message, state: FSMContext):
     store_name = (store.get("name") or "Do'kon") if store else "Do'kon"
     store_emoji = (store.get("emoji") or "🏪") if store else "🏪"
     loc_line = ""
+    yandex_line = ""
     if lat and lon:
         loc_line = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+        yandex_line = f"\n🚖 <a href='https://taxi.yandex.com/route?end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go chaqirish</a>"
     promo_line = f"\n🎟️ Promo: {promo} (-{discount:,} so'm)" if promo else ""
+    addr_display = address or (f"GPS: {lat:.5f}, {lon:.5f}" if lat and lon else "—")
 
     admin_txt = (
         f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
         f"{store_emoji} {store_name}\n\n"
         f"👤 <b>{full_name}</b>\n"
         f"📞 <a href='tel:{phone}'>{phone}</a>\n"
-        f"📍 {address}{loc_line}{promo_line}\n\n"
+        f"📍 {addr_display}{loc_line}{yandex_line}{promo_line}\n\n"
         f"🛒 {items}\n"
         f"💰 <b>Jami: {total:,} so'm</b>"
     )

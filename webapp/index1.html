@@ -766,9 +766,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
             <input id="orderAddress" type="text" placeholder="Ko'cha, uy raqami, mo'ljal"
               style="width:100%;padding:14px 48px 14px 14px;background:var(--fill2);border:1.5px solid var(--sep);border-radius:14px;font-size:15px;font-family:var(--font);color:var(--lbl);outline:none;box-sizing:border-box"
               onfocus="this.style.borderColor='var(--acc)'" onblur="this.style.borderColor='var(--sep)'">
-            <button onclick="pickOrderLocation()" title="GPS" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:20px;padding:4px">📡</button>
+            <button onclick="pickOrderLocation()" title="GPS" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:20px;padding:4px;line-height:1">📡</button>
           </div>
-          <div id="orderLocHint" style="font-size:11px;color:var(--lbl3);margin-top:4px;padding:0 2px"></div>
+          <div id="orderLocHint" style="font-size:12px;margin-top:5px;padding:0 2px;min-height:16px"></div>
+          <div style="font-size:11px;color:var(--lbl3);margin-top:2px;padding:0 2px">📡 tugmasini bosing — GPS avtomatik aniqlanadi</div>
         </div>
       </div>
       <button onclick="submitOrder()" id="submitOrderBtn"
@@ -1697,14 +1698,25 @@ function closeOrderInfo() {
 
 function pickOrderLocation() {
   const hint = document.getElementById('orderLocHint');
+  const addrInp = document.getElementById('orderAddress');
   hint.textContent = '⏳ GPS aniqlanmoqda...';
+  hint.style.color = 'var(--lbl2)';
   if (!navigator.geolocation) { hint.textContent = '❌ GPS qo\'llab-quvvatlanmaydi'; return; }
   navigator.geolocation.getCurrentPosition(
     pos => {
       orderLat = pos.coords.latitude;
       orderLon = pos.coords.longitude;
-      hint.textContent = `✅ GPS: ${orderLat.toFixed(4)}, ${orderLon.toFixed(4)}`;
+      // Auto-fill address field — user can still edit
+      if (addrInp && !addrInp.value) {
+        addrInp.value = `📍 GPS: ${orderLat.toFixed(5)}, ${orderLon.toFixed(5)}`;
+      }
+      hint.textContent = '✅ GPS muvaffaqiyatli aniqlandi';
       hint.style.color = '#2E7D32';
+      // Visual feedback on the address field
+      if (addrInp) {
+        addrInp.style.borderColor = '#2E7D32';
+        addrInp.readOnly = false; // user can still change
+      }
     },
     err => { hint.textContent = '❌ GPS xato: ' + err.message; hint.style.color = '#C62828'; },
     { enableHighAccuracy: true, timeout: 10000 }
@@ -1715,7 +1727,12 @@ function submitOrder() {
   const phone = (document.getElementById('orderPhone')?.value || '').trim();
   const addr  = (document.getElementById('orderAddress')?.value || '').trim();
   if (!phone) { showToast('⚠️ Telefon raqamini kiriting!'); document.getElementById('orderPhone')?.focus(); return; }
-  if (!addr)  { showToast('⚠️ Manzilni kiriting!'); document.getElementById('orderAddress')?.focus(); return; }
+  // Address is optional IF GPS is already picked
+  if (!addr && !orderLat) {
+    showToast('⚠️ Manzil yoki GPS kiriting!');
+    document.getElementById('orderAddress')?.focus();
+    return;
+  }
 
   // Save for next time
   localStorage.setItem('orderPhone', phone);
