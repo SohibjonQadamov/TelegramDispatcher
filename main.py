@@ -27,6 +27,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    Update,
 )
 from dotenv import load_dotenv
 
@@ -2591,22 +2592,58 @@ async def main():
     if os.path.exists("webapp"):
         app.router.add_static('/webapp/', path='webapp', name='webapp')
 
+    # ── Webhook handler ─────────────────────────────────────────────────────
+    WEBHOOK_PATH = "/webhook"
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "lazzat_secret_2026")
+
+    async def telegram_webhook(request: web.Request) -> web.Response:
+        """Receive updates from Telegram via webhook."""
+        # Verify secret token header (optional but secure)
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+            logger.warning("Webhook: invalid secret token")
+            return web.Response(status=403, text="Forbidden")
+        try:
+            data = await request.json()
+            update = Update.model_validate(data)
+            await dp.feed_update(bot=bot, update=update)
+        except Exception as e:
+            logger.exception(f"Webhook error: {e}")
+        return web.Response(text="ok")
+
+    app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+
     runner = web.AppRunner(app)
     await runner.setup()
 
-    # Render PORT'ida web-serverni ishga tushirish
     site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
     await site.start()
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    # 5. Kunlik hisobot fon vazifasi
+    # 5. Set webhook with Telegram (drop old updates to avoid backlog)
+    webhook_url = f"{WEBAPP_URL}{WEBHOOK_PATH}"
+    try:
+        await bot.set_webhook(
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "web_app_data"]
+        )
+        logger.info(f"Webhook set: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+
+    # 6. Kunlik hisobot fon vazifasi
     asyncio.create_task(daily_report_loop(bot))
 
-    # 6. Botni polling rejimida yoqish
+    # 7. Keep running (webhook handles updates, no polling loop needed)
+    logger.info("Bot is running in webhook mode. Waiting for updates...")
     try:
-        await dp.start_polling(bot, skip_updates=True)
+        await asyncio.Event().wait()   # runs forever until process killed
     finally:
+        await bot.delete_webhook(drop_pending_updates=False)
         await bot.session.close()
+        logger.info("Bot stopped, webhook removed.")
 
 if __name__ == "__main__":
     asyncio.run(main())
