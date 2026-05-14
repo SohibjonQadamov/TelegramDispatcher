@@ -955,7 +955,7 @@ function playOrderSound() {
 
 async function loadOrders() {
   try {
-    const r = await fetch(`/api/orders?admin_id=${ADMIN_ID}`);
+    const r = await fetch(`/api/orders?admin_id=${ADMIN_ID}${curBranchId?'&store_id='+curBranchId:''}`);
     const d = await r.json();
     const prevIds = new Set(orders.map(o => o.id));
     orders = d.orders || [];

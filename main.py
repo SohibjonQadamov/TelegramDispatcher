@@ -1930,10 +1930,12 @@ async def handle_place_order(request):
 
         # Find store + admin
         store = None
+        confirmed_store = None   # store found by explicit store_id (used for stock)
         admin_chat_id = None
         if store_id is not None:
             try:
                 store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+                confirmed_store = store
             except Exception as e:
                 logger.warning(f"Store lookup failed store_id={store_id}: {e}")
         if not store:
@@ -1948,9 +1950,9 @@ async def handle_place_order(request):
         # Save to DB (with delivery_fee)
         oid = create_order(full_name, phone, address, lat, lon, items, total,
                            uid or 0, full_name, store_id, target_chat, delivery_fee)
-        # Decrease stock counts for ordered products
+        # Decrease stock counts — only for the confirmed store (not fallback)
         try:
-            sid = store['id'] if store else None
+            sid = confirmed_store['id'] if confirmed_store else None
             if sid: _decrease_stock(items, sid)
         except Exception as _e:
             logger.warning(f"stock decrease error: {_e}")
@@ -2262,6 +2264,7 @@ async def handle_referral_link(request):
 async def handle_orders(request):
     """Buyurtmalar ro'yxati — admin paneli uchun."""
     admin_id = request.query.get("admin_id")
+    store_id_param = request.query.get("store_id")
     if not admin_id or admin_id == '0':
         return web.json_response({"error": "admin_id required"}, status=400)
     try:
@@ -2269,7 +2272,16 @@ async def handle_orders(request):
     except ValueError:
         return web.json_response({"error": "invalid admin_id"}, status=400)
 
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    # Use explicit store_id if provided (branch switch), else fall back to first store
+    if store_id_param:
+        try:
+            store = db_fetchone("SELECT * FROM stores WHERE id=? AND admin_id=?",
+                                (int(store_id_param), admin_id_int))
+        except Exception:
+            store = None
+    else:
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+
     if store:
         orders = db_fetchall(
             "SELECT * FROM orders WHERE store_id=? ORDER BY created_at DESC LIMIT 100",
@@ -3005,6 +3017,7 @@ async def handle_broadcast(request):
             try:
                 await bot.send_message(int(uid), full_text, parse_mode="HTML")
                 sent += 1
+                await asyncio.sleep(0.05)  # 20 msg/s — Telegram rate limit
             except Exception as e:
                 logger.warning(f"Broadcast skip uid={uid}: {e}")
 
@@ -3028,25 +3041,25 @@ async def handle_customers(request):
     store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id_int,))
     if store:
         rows = db_fetchall(
-            """SELECT full_name, phone, created_by_id,
+            """SELECT MAX(full_name) as full_name, MAX(phone) as phone, created_by_id,
                       COUNT(*) as order_count,
                       COALESCE(SUM(total),0) as total_spent,
                       MAX(created_at) as last_order
                FROM orders
                WHERE store_id=? AND status != 'CANCELLED'
-               GROUP BY COALESCE(created_by_id, phone)
+               GROUP BY created_by_id
                ORDER BY order_count DESC, total_spent DESC
                LIMIT 200""",
             (store['id'],)
         )
     elif admin_id_int in ADMIN_IDS:
         rows = db_fetchall(
-            """SELECT full_name, phone, created_by_id,
+            """SELECT MAX(full_name) as full_name, MAX(phone) as phone, created_by_id,
                       COUNT(*) as order_count,
                       COALESCE(SUM(total),0) as total_spent,
                       MAX(created_at) as last_order
                FROM orders WHERE status != 'CANCELLED'
-               GROUP BY COALESCE(created_by_id, phone)
+               GROUP BY created_by_id
                ORDER BY order_count DESC, total_spent DESC
                LIMIT 200"""
         )

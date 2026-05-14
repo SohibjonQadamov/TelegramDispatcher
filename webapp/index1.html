@@ -1570,6 +1570,7 @@ function addCart(pid, ev) {
   if (cart.length && cart[0].store_id != p.store_id) {
     if (!confirm(t('confirm_store'))) return;
     cart = [];
+    window._deliveryFeeInfo = null;  // BUG5: clear stale fee from old store
   }
   const ex = cart.find(c => c.id == pid);
   if (ex) ex.qty++; else cart.push({...p, qty:1});
@@ -1622,7 +1623,7 @@ function closeCart() {
   setTimeout(() => { document.getElementById('cart-ov').classList.add('gone'); sh.classList.remove('closing'); }, 260);
 }
 
-function clearCart() { cart=[]; updBadge(); renderCItems(); refreshProds(); updateStoreCB(); }
+function clearCart() { cart=[]; window._deliveryFeeInfo = null; updBadge(); renderCItems(); refreshProds(); updateStoreCB(); }
 
 // Active promo state — set by applyPromo(), used in renderCItems/placeOrder
 let activePromo = null;
