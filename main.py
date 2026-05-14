@@ -297,6 +297,7 @@ def _init_db_pg():
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured INTEGER DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_available INTEGER DEFAULT 1",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
@@ -375,6 +376,7 @@ def _init_db_sqlite():
             "ALTER TABLE users ADD COLUMN phone TEXT",
             "ALTER TABLE products ADD COLUMN photo_url TEXT",
             "ALTER TABLE products ADD COLUMN is_featured INTEGER DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN is_available INTEGER DEFAULT 1",
             # products — ALL columns
             "ALTER TABLE products ADD COLUMN store_id INTEGER",
             "ALTER TABLE products ADD COLUMN name TEXT",
@@ -1615,7 +1617,8 @@ async def handle_api_data(request):
             "discount_qty": p['discount_qty'],
             "discount_end": p['discount_end'],
             "photo_url": p.get('photo_url') or '',
-            "is_featured": p.get('is_featured') or 0,
+            "is_featured":   p.get('is_featured') or 0,
+            "is_available":  1 if p.get('is_available', 1) else 0,
         })
 
     return web.json_response({"stores": stores, "menuItems": menuItems})
@@ -1721,19 +1724,20 @@ async def handle_update_product(request):
         disc_end   = data.get('discount_end') or None
         photo_url  = (data.get('photo_url') or '').strip() or None
         is_feat    = 1 if data.get('is_featured') else 0
+        is_avail   = 0 if data.get('is_available') == 0 else 1
 
         if not name:
             return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
 
         if p_id:
             db_execute(
-                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=? WHERE id=? AND store_id=?",
-                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, int(p_id), store['id'])
+                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=?, is_available=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, int(p_id), store['id'])
             )
         else:
             db_execute(
-                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat)
+                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured, is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail)
             )
         logger.info(f"Product saved: store={store['id']} name={name}")
         return web.json_response({"status": "ok"})
@@ -1749,6 +1753,27 @@ async def handle_delete_product(request):
     if store and p_id:
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
+
+
+async def handle_toggle_availability(request):
+    """Toggle product is_available (0/1) — quick stock control."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        p_id     = int(data.get('id') or 0)
+        if not admin_id or not p_id:
+            return web.json_response({"error": "admin_id and id required"}, status=400)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=400)
+        prod = db_fetchone("SELECT is_available FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
+        if not prod:
+            return web.json_response({"error": "Product not found"}, status=404)
+        new_val = 0 if prod.get('is_available', 1) else 1
+        db_execute("UPDATE products SET is_available=? WHERE id=?", (new_val, p_id))
+        return web.json_response({"status": "ok", "is_available": new_val})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def handle_place_order(request):
@@ -2934,6 +2959,7 @@ async def main():
     app.router.add_post('/api/store', handle_update_store)
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
+    app.router.add_post('/api/toggle_availability', handle_toggle_availability)
     app.router.add_post('/api/user_region', handle_user_region)
     app.router.add_get('/api/delivery_fee', handle_delivery_fee)
     app.router.add_post('/api/order', handle_place_order)          # HTTP order (reliable)
