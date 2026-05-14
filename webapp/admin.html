@@ -796,6 +796,7 @@ async function loadAll() {
     return;
   }
   await Promise.all([loadAdminData(), loadStats(), loadOrders(), loadSubscription(), loadRatings(), loadBranding()]);
+  startOrdersRefresh(); // auto-refresh orders every 20s
 }
 
 async function loadAdminData() {
@@ -857,11 +858,33 @@ async function loadStats() {
   }
 }
 
+// Auto-refresh orders every 20 seconds when on orders or dash tab
+let _ordersRefreshTimer = null;
+function startOrdersRefresh() {
+  stopOrdersRefresh();
+  _ordersRefreshTimer = setInterval(async () => {
+    if (curPageId === 'orders' || curPageId === 'dash') {
+      await loadOrders();
+      if (curPageId === 'dash') { renderDash(); renderRecentOrders(); }
+    }
+  }, 20000);
+}
+function stopOrdersRefresh() {
+  if (_ordersRefreshTimer) { clearInterval(_ordersRefreshTimer); _ordersRefreshTimer = null; }
+}
+
 async function loadOrders() {
   try {
     const r = await fetch(`/api/orders?admin_id=${ADMIN_ID}`);
     const d = await r.json();
+    const prevNewCount = orders.filter(o => o.status === 'NEW').length;
     orders = d.orders || [];
+    // Show toast if new order arrived
+    const newCount = orders.filter(o => o.status === 'NEW').length;
+    if (newCount > prevNewCount) {
+      showToast(`🆕 Yangi buyurtma keldi! (${newCount} ta)`);
+      try { tg.HapticFeedback?.notificationOccurred('success'); } catch(e) {}
+    }
     updateOrderCounts();
     renderOrders();
     renderRecentOrders();
@@ -1855,27 +1878,41 @@ async function saveLocation() {
 
 async function saveStore() {
   if (!ADMIN_ID) { showToast('❌ ID=0. Botdan oching!'); return; }
-  const name  = (document.getElementById('sName')?.value  || '').trim();
-  const type  = (document.getElementById('sType')?.value  || '').trim();
-  const emoji = (document.getElementById('sEmoji')?.value || '🍔').trim() || '🍔';
-  if (!name) { showToast('⚠️ Do\'kon nomini kiriting!'); return; }
-  if (!type) { showToast('⚠️ Do\'kon turini kiriting!'); return; }
+
+  // ── Read ALL form fields ──
+  const name     = (document.getElementById('sName')?.value    || '').trim();
+  const type     = (document.getElementById('sType')?.value    || '').trim();
+  const emoji    = (document.getElementById('sEmoji')?.value   || '🍔').trim() || '🍔';
+  const region   = (document.getElementById('sRegion')?.value  || '').trim();
+  const city     = (document.getElementById('sCity')?.value    || '').trim();
+  const district = (document.getElementById('sDistrict')?.value|| '').trim();
+  const address  = (document.getElementById('sAddress')?.value || '').trim();
+  const phone    = (document.getElementById('sPhone')?.value   || '').trim();
+  const desc     = (document.getElementById('sDesc')?.value    || '').trim();
+  const hf1 = document.getElementById('sHFrom1')?.value || '09:00';
+  const ht1 = document.getElementById('sHTo1')?.value   || '22:00';
+  const hf2 = document.getElementById('sHFrom2')?.value || '10:00';
+  const ht2 = document.getElementById('sHTo2')?.value   || '23:00';
+  const lat = pickedLat ?? storeData?.lat ?? null;
+  const lon = pickedLon ?? storeData?.lon ?? null;
+
+  // ── Validation ──
+  if (!name)   { showToast('⚠️ Do\'kon nomini kiriting!');    navTo('set'); return; }
+  if (!type)   { showToast('⚠️ Do\'kon turini kiriting!');    navTo('set'); return; }
+  if (!region) { showToast('⚠️ Viloyatni tanlang (📍 Joylashuv bo\'limidan)!'); navTo('set'); return; }
+  if (!city)   { showToast('⚠️ Shaharni kiriting (📍 Joylashuv bo\'limidan)!'); navTo('set'); return; }
+
   const payload = {
     admin_id: ADMIN_ID, name, type, emoji,
     delivery_fee: storeData?.delivery_fee ?? 15000,
     eta:          storeData?.eta ?? 25,
     radius:       storeData?.radius ?? 5,
     min_order:    storeData?.min_order ?? 50000,
-    hours_weekday: storeData?.hours_weekday || '09:00-22:00',
-    hours_weekend: storeData?.hours_weekend || '10:00-23:00',
-    region:   storeData?.region || '',
-    city:     storeData?.city || '',
-    district: storeData?.district || '',
-    address:  storeData?.address || '',
-    phone:    storeData?.phone || '',
-    description: storeData?.description || '',
-    lat:      storeData?.lat ?? null,
-    lon:      storeData?.lon ?? null,
+    hours_weekday: `${hf1}-${ht1}`,
+    hours_weekend: `${hf2}-${ht2}`,
+    region, city, district, address, phone,
+    description: desc,
+    lat, lon,
   };
   showToast('⏳ Saqlanmoqda...');
   try {
@@ -1887,7 +1924,7 @@ async function saveStore() {
     const text = await r.text();
     if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + text);
     showToast('✅ "' + name + '" saqlandi!');
-    storeData = null; // force reload
+    storeData = null;
     await loadAdminData();
   } catch(e) {
     console.error('saveStore:', e);

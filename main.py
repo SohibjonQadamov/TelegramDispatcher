@@ -646,69 +646,104 @@ async def webapp_handler(msg: Message, state: FSMContext):
     promo     = data.get("promo_code", "")
     discount  = int(data.get("discount") or 0)
 
-    if not items or not phone or not address:
-        await msg.answer("❌ Buyurtma ma'lumotlari to'liq emas. Qaytadan urinib ko'ring.")
-        return
+    # Validate — phone required; address OR GPS required
+    if not items:
+        await msg.answer("❌ Savat bo'sh. Qaytadan urinib ko'ring."); return
+    if not phone:
+        await msg.answer("❌ Telefon raqamini kiriting."); return
+    has_gps = (lat is not None) and (lon is not None)
+    if not address and not has_gps:
+        await msg.answer("❌ Manzil yoki GPS lokatsiyasini kiriting."); return
+
+    # Use GPS string as address if address is empty
+    if not address and has_gps:
+        address = f"GPS: {lat:.5f}, {lon:.5f}"
 
     # Save phone to user profile
-    if phone:
+    try:
         db_execute("UPDATE users SET phone=? WHERE user_id=?", (phone, uid))
+    except Exception: pass
 
-    # Find store + admin
+    # Find store + admin — route notification to correct admin
     store = None
-    target_chat = GROUP_CHAT_ID
+    admin_chat_id = None
     if store_id:
-        store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
-        if store and store.get("admin_id"):
-            target_chat = int(store["admin_id"])
+        try:
+            store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+            if store and store.get("admin_id"):
+                admin_chat_id = int(store["admin_id"])
+        except Exception as e:
+            logger.warning(f"Store lookup failed: {e}")
+
+    target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else None)
 
     # Save order to DB
-    oid = create_order(full_name, phone, address, lat, lon, items, total, uid, full_name, store_id, target_chat)
-    order = get_order(oid)
+    oid = create_order(full_name, phone, address, lat, lon, items, total, uid, full_name,
+                       store_id, target_chat or 0)
+    logger.info(f"New order #{oid}: uid={uid} store={store_id} target={target_chat}")
 
-    # ── Format message for admin ──
-    store_name = (store.get("name") or "Do'kon") if store else "Do'kon"
-    store_emoji = (store.get("emoji") or "🏪") if store else "🏪"
-    loc_line = ""
+    # ── Format notification message ──
+    store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
+    store_emoji = (store.get("emoji") or "🏪")     if store else "🏪"
+    loc_line    = ""
     yandex_line = ""
-    if lat and lon:
-        loc_line = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
-        yandex_line = f"\n🚖 <a href='https://taxi.yandex.com/route?end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go chaqirish</a>"
-    promo_line = f"\n🎟️ Promo: {promo} (-{discount:,} so'm)" if promo else ""
-    addr_display = address or (f"GPS: {lat:.5f}, {lon:.5f}" if lat and lon else "—")
+    if has_gps:
+        loc_line    = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+        yandex_line = (f"\n🚖 <a href='https://taxi.yandex.com/route?"
+                       f"end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go chaqirish</a>")
+    promo_line  = f"\n🎟️ Promo: {promo} (-{discount:,} so'm)" if promo else ""
 
     admin_txt = (
         f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
         f"{store_emoji} {store_name}\n\n"
         f"👤 <b>{full_name}</b>\n"
         f"📞 <a href='tel:{phone}'>{phone}</a>\n"
-        f"📍 {addr_display}{loc_line}{yandex_line}{promo_line}\n\n"
+        f"📍 {address}{loc_line}{yandex_line}{promo_line}\n\n"
         f"🛒 {items}\n"
         f"💰 <b>Jami: {total:,} so'm</b>"
     )
 
-    try:
-        sent = await msg.bot.send_message(
-            target_chat, admin_txt,
-            parse_mode="HTML",
-            reply_markup=admin_order_kb(oid)
-        )
-        # If GPS, also send location pin right after
-        if lat and lon:
-            try:
-                await msg.bot.send_location(target_chat, lat, lon, reply_to_message_id=sent.message_id)
-            except Exception:
-                pass
-        set_group_message_id(oid, sent.message_id)
-    except Exception as e:
-        logger.exception(f"Admin notify failed: {e}")
-        # Fallback: send to group
+    # ── Send notification to admin ──
+    notified = False
+
+    # 1) Store admin's personal chat
+    if admin_chat_id:
         try:
-            if target_chat != GROUP_CHAT_ID:
-                await msg.bot.send_message(GROUP_CHAT_ID, admin_txt, parse_mode="HTML",
-                                           reply_markup=admin_order_kb(oid))
-        except Exception:
-            pass
+            sent = await msg.bot.send_message(
+                admin_chat_id, admin_txt,
+                parse_mode="HTML", reply_markup=admin_order_kb(oid)
+            )
+            if has_gps:
+                try:
+                    await msg.bot.send_location(admin_chat_id, lat, lon,
+                                                reply_to_message_id=sent.message_id)
+                except Exception: pass
+            set_group_message_id(oid, sent.message_id)
+            notified = True
+            logger.info(f"Order #{oid} notified admin {admin_chat_id}")
+        except Exception as e:
+            logger.error(f"Admin notify failed (chat {admin_chat_id}): {e}")
+
+    # 2) Fallback — group chat
+    if not notified and GROUP_CHAT_ID:
+        try:
+            sent = await msg.bot.send_message(
+                GROUP_CHAT_ID, admin_txt,
+                parse_mode="HTML", reply_markup=admin_order_kb(oid)
+            )
+            if has_gps:
+                try:
+                    await msg.bot.send_location(GROUP_CHAT_ID, lat, lon,
+                                                reply_to_message_id=sent.message_id)
+                except Exception: pass
+            set_group_message_id(oid, sent.message_id)
+            notified = True
+            logger.info(f"Order #{oid} sent to group {GROUP_CHAT_ID}")
+        except Exception as e:
+            logger.error(f"Group notify failed: {e}")
+
+    if not notified:
+        logger.error(f"Order #{oid} could not be delivered to any chat!")
 
     # ── Confirm to user ──
     await msg.answer(
