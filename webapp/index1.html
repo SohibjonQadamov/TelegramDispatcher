@@ -670,6 +670,13 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
         </div>
       </div>
       <div class="s-body">
+        <div style="padding:8px 16px 0">
+          <div style="display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.06);border-radius:12px;padding:9px 12px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity:.45;flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            <input id="menuSearchInp" type="search" placeholder="Mahsulot qidirish..." oninput="searchMenu(this.value)"
+              style="border:none;background:none;outline:none;font-size:14px;width:100%;font-family:var(--font);color:var(--txt)">
+          </div>
+        </div>
         <div class="m-cats" id="mCats"></div>
         <div class="m-prods pl" id="mProds" style="padding:4px 16px 16px"></div>
       </div>
@@ -1526,6 +1533,13 @@ function openStore(id) {
   renderMProds(prods);
   showPg('store');
   updateStoreCB();
+}
+
+function searchMenu(q) {
+  const prods = menu[curStore] || [];
+  const s = q.trim().toLowerCase();
+  if (!s) { renderMProds(curMenuCat === 'all' ? prods : prods.filter(p => p.cat === curMenuCat)); return; }
+  renderMProds(prods.filter(p => (p.name||'').toLowerCase().includes(s) || (p.desc||'').toLowerCase().includes(s) || (p.cat||'').toLowerCase().includes(s)));
 }
 
 function filterMCat(cat, btn) {

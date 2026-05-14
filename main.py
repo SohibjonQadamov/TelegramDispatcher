@@ -145,7 +145,7 @@ _TABLES_SQL = [
     # stores  ← CENTRAL TABLE: stores/products/orders separated
     """CREATE TABLE IF NOT EXISTS stores (
         id {id_def},
-        admin_id BIGINT UNIQUE,
+        admin_id BIGINT,
         name TEXT, type TEXT, emoji TEXT, bg_color TEXT,
         delivery_fee INTEGER DEFAULT 15000,
         eta INTEGER DEFAULT 25,
@@ -289,6 +289,8 @@ def _init_db_pg():
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS base_delivery_fee INTEGER DEFAULT 5000",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS price_per_km INTEGER DEFAULT 2000",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS delivery_group_id BIGINT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS branch_label TEXT",
+                "ALTER TABLE stores DROP CONSTRAINT IF EXISTS stores_admin_id_key",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS district TEXT",
@@ -369,6 +371,7 @@ def _init_db_sqlite():
             "ALTER TABLE stores ADD COLUMN base_delivery_fee INTEGER DEFAULT 5000",
             "ALTER TABLE stores ADD COLUMN price_per_km INTEGER DEFAULT 2000",
             "ALTER TABLE stores ADD COLUMN delivery_group_id INTEGER",
+            "ALTER TABLE stores ADD COLUMN branch_label TEXT",
             "ALTER TABLE users ADD COLUMN region TEXT",
             "ALTER TABLE users ADD COLUMN city TEXT",
             "ALTER TABLE users ADD COLUMN district TEXT",
@@ -1690,6 +1693,7 @@ async def handle_api_data(request):
 
 async def handle_admin_data(request):
     admin_id = request.query.get("admin_id")
+    store_id = request.query.get("store_id")  # optional: which branch
     if not admin_id or admin_id == '0':
         return web.json_response({"error": "admin_id required"}, status=400)
     try:
@@ -1697,12 +1701,17 @@ async def handle_admin_data(request):
     except ValueError:
         return web.json_response({"error": "invalid admin_id"}, status=400)
 
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    all_stores = db_fetchall("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    if store_id:
+        store = next((s for s in all_stores if str(s['id']) == str(store_id)), None) or (all_stores[0] if all_stores else None)
+    else:
+        store = all_stores[0] if all_stores else None
+
     products = []
     if store:
         products = db_fetchall("SELECT * FROM products WHERE store_id=?", (store['id'],))
 
-    return web.json_response({"store": store, "products": products})
+    return web.json_response({"store": store, "products": products, "all_stores": all_stores})
 
 async def handle_update_store(request):
     try:
@@ -1743,21 +1752,28 @@ async def handle_update_store(request):
         delivery_group_id = data.get('delivery_group_id')
         try: delivery_group_id = int(delivery_group_id) if delivery_group_id else None
         except: delivery_group_id = None
+        branch_label = (data.get('branch_label') or '').strip() or None
         bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
 
-        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
-        if store:
+        # If store_id passed — update that specific branch
+        edit_store_id = data.get('store_id')
+        if edit_store_id:
+            try: edit_store_id = int(edit_store_id)
+            except: edit_store_id = None
+
+        if edit_store_id:
             db_execute(
-                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=?, base_delivery_fee=?, price_per_km=?, delivery_group_id=? WHERE admin_id=?",
-                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, admin_id)
+                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=?, base_delivery_fee=?, price_per_km=?, delivery_group_id=?, branch_label=? WHERE id=? AND admin_id=?",
+                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label, edit_store_id, admin_id)
             )
-            logger.info(f"Store updated: admin_id={admin_id} name={name}")
+            logger.info(f"Store branch updated: id={edit_store_id} admin_id={admin_id} name={name}")
         else:
+            # Create new branch
             db_execute(
-                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id)
+                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
             )
-            logger.info(f"Store created: admin_id={admin_id} name={name}")
+            logger.info(f"Store branch created: admin_id={admin_id} name={name}")
 
         return web.json_response({"status": "ok", "name": name})
 
