@@ -127,7 +127,9 @@ _TABLES_SQL = [
         group_message_id INTEGER,
         store_id INTEGER, target_chat_id BIGINT,
         yandex_claim_id TEXT, yandex_status TEXT,
-        yandex_tracking_url TEXT, delivery_type TEXT DEFAULT 'own'
+        yandex_tracking_url TEXT, delivery_type TEXT DEFAULT 'own',
+        delivery_fee INTEGER DEFAULT 0,
+        delivery_courier_id BIGINT, delivery_courier_name TEXT
     )""",
     # users
     """CREATE TABLE IF NOT EXISTS users (
@@ -252,6 +254,9 @@ def _init_db_pg():
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_tracking_url TEXT",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_type TEXT DEFAULT 'own'",
                 "ALTER TABLE orders ADD COLUMN IF NOT EXISTS group_message_id INTEGER",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 0",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_courier_id BIGINT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_courier_name TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT",
@@ -325,6 +330,9 @@ def _init_db_sqlite():
             "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
             "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
             "ALTER TABLE orders ADD COLUMN group_message_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN delivery_fee INTEGER DEFAULT 0",
+            "ALTER TABLE orders ADD COLUMN delivery_courier_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN delivery_courier_name TEXT",
             # users
             "ALTER TABLE users ADD COLUMN first_name TEXT",
             "ALTER TABLE users ADD COLUMN last_name TEXT",
@@ -441,14 +449,14 @@ def db_execute(sql, params=()):
             conn.commit()
 
 
-def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None, target_chat_id=None):
+def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None, target_chat_id=None, delivery_fee=0):
     if USE_PG:
         conn = _pg_conn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (%s, 'NEW', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                    (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
+                    "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id, delivery_fee) VALUES (%s, 'NEW', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id, delivery_fee)
                 )
                 oid = cur.fetchone()["id"]
             conn.commit()
@@ -458,8 +466,8 @@ def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, 
     else:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.execute(
-                "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id)
+                "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id, delivery_fee) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id, delivery_fee)
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -668,6 +676,16 @@ def user_received_kb(oid: int) -> InlineKeyboardMarkup:
     """User presses this when they receive the order."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Qabul qildim!", callback_data=f"user_received:{oid}")]
+    ])
+
+
+def courier_group_kb(oid: int, fee: int) -> InlineKeyboardMarkup:
+    """Courier group — first to press gets the delivery."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✅ Men olaman! ({fee:,} so'm)",
+            callback_data=f"courier_take:{oid}"
+        )]
     ])
 
 
@@ -1173,6 +1191,22 @@ async def adm_ready(cb: CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception: pass
 
+    # Notify assigned courier (from group) that food is ready for pickup
+    courier_id = order.get("delivery_courier_id")
+    if courier_id:
+        fee = order.get("delivery_fee") or 0
+        try:
+            await cb.bot.send_message(
+                int(courier_id),
+                f"✅ <b>Buyurtma #{oid} tayyor!</b>\n\n"
+                f"Do'konga borib olib keting 🏃\n"
+                f"📍 {order.get('address', '—')}\n\n"
+                f"💵 Yetkazish haqi: <b>{fee:,} so'm</b> (mijozdan olasiz)",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"adm_ready courier notify failed: {e}")
+
     # Notify user — send "Qabul qildim" button
     uid = order.get("created_by_id")
     if uid:
@@ -1214,6 +1248,84 @@ async def user_received(cb: CallbackQuery):
                 f"💰 {order.get('total',0):,} so'm\n\n"
                 f"Buyurtma muvaffaqiyatli yakunlandi ✅",
                 parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("courier_take:"))
+async def courier_take(cb: CallbackQuery):
+    """Courier in the group presses 'Men olaman!' — first one gets the order."""
+    if not cb.from_user: return
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order:
+        await cb.answer("Buyurtma topilmadi", show_alert=True); return
+
+    # Check if already taken by someone else
+    existing = order.get("delivery_courier_id")
+    if existing:
+        taker = order.get("delivery_courier_name") or "boshqa kuryer"
+        await cb.answer(f"❌ Bu buyurtmani allaqachon {taker} oldi!", show_alert=True)
+        return
+
+    # Claim the order for this courier
+    db_execute(
+        "UPDATE orders SET delivery_courier_id=?, delivery_courier_name=? WHERE id=?",
+        (cb.from_user.id, cb.from_user.full_name, oid)
+    )
+
+    courier_name = cb.from_user.full_name or cb.from_user.first_name or "Kuryer"
+    fee = order.get("delivery_fee") or 0
+
+    # Edit group message to show who took it
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+        await cb.message.reply(
+            f"✅ <b>{courier_name}</b> buyurtmani qabul qildi!\n"
+            f"💵 Yetkazish haqi: <b>{fee:,} so'm</b>",
+            parse_mode="HTML"
+        )
+    except Exception: pass
+
+    await cb.answer(f"✅ Qabul qildingiz! {fee:,} so'm olasiz.")
+
+    # DM the courier with full order details
+    try:
+        addr  = order.get("address", "—")
+        phone = order.get("phone", "—")
+        name  = order.get("full_name", "—")
+        items = order.get("items", "—")
+        total = order.get("total", 0)
+        lat_o, lon_o = order.get("lat"), order.get("lon")
+
+        txt = (
+            f"🚗 <b>Buyurtma #{oid}</b>\n\n"
+            f"👤 {name}\n"
+            f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+            f"📍 {addr}\n\n"
+            f"🛒 {items}\n"
+            f"💰 Buyurtma: {total:,} so'm\n\n"
+            f"💵 <b>Sizning haqqingiz: {fee:,} so'm</b>\n"
+            f"<i>(Mijozdan yetkazgandan keyin oling)</i>\n\n"
+            f"Do'kon tayyorlagandan keyin xabar beriladi ✅"
+        )
+        await cb.bot.send_message(cb.from_user.id, txt, parse_mode="HTML")
+        if lat_o and lon_o:
+            try: await cb.bot.send_location(cb.from_user.id, lat_o, lon_o)
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"courier_take DM failed: {e}")
+
+    # Notify admin that a courier has taken the delivery
+    target_chat = order.get("target_chat_id")
+    if target_chat:
+        try:
+            await cb.bot.send_message(
+                int(target_chat),
+                f"🚗 <b>Kuryer topildi!</b>\n"
+                f"Buyurtma #{oid} → <b>{courier_name}</b>\n"
+                f"Ovqat tayyor bo'lganda kuryer xabardor qilinadi.",
+                parse_mode="HTML"
+            )
         except Exception: pass
 
 
@@ -1642,17 +1754,19 @@ async def handle_place_order(request):
     """HTTP order placement — used by mini-app instead of tg.sendData (more reliable)."""
     try:
         data = await request.json()
-        uid       = data.get("user_id") or 0
-        full_name = (data.get("full_name") or "Mehmon").strip()
-        phone     = (data.get("phone") or "").strip()
-        address   = (data.get("address") or "").strip()
-        lat       = data.get("lat")
-        lon       = data.get("lon")
-        items     = data.get("items", "")
-        total     = int(data.get("total") or 0)
-        store_id  = data.get("store_id")
-        promo     = data.get("promo_code", "")
-        discount  = int(data.get("discount") or 0)
+        uid          = data.get("user_id") or 0
+        full_name    = (data.get("full_name") or "Mehmon").strip()
+        phone        = (data.get("phone") or "").strip()
+        address      = (data.get("address") or "").strip()
+        lat          = data.get("lat")
+        lon          = data.get("lon")
+        items        = data.get("items", "")
+        total        = int(data.get("total") or 0)
+        store_id     = data.get("store_id")
+        promo        = data.get("promo_code", "")
+        discount     = int(data.get("discount") or 0)
+        delivery_fee = int(data.get("delivery_fee") or 0)
+        delivery_km  = data.get("delivery_km")   # float or None, for display only
 
         if not items:
             return web.json_response({"error": "Savat bo'sh"}, status=400)
@@ -1687,15 +1801,15 @@ async def handle_place_order(request):
 
         target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else 0)
 
-        # Save to DB
+        # Save to DB (with delivery_fee)
         oid = create_order(full_name, phone, address, lat, lon, items, total,
-                           uid or 0, full_name, store_id, target_chat)
+                           uid or 0, full_name, store_id, target_chat, delivery_fee)
         logger.info(
             f"[HTTP] Order #{oid}: user={uid} store={store_id} "
-            f"admin_chat={admin_chat_id} group={GROUP_CHAT_ID}"
+            f"admin_chat={admin_chat_id} delivery_fee={delivery_fee}"
         )
 
-        # Format notification
+        # ── Format admin notification ──────────────────────────────────────────
         store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
         store_emoji = (store.get("emoji") or "🏪")     if store else "🏪"
         loc_line, yandex_line = "", ""
@@ -1705,6 +1819,13 @@ async def handle_place_order(request):
                            f"end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go</a>")
         promo_line = f"\n🎟️ {promo} (-{discount:,} so'm)" if promo else ""
 
+        # Delivery fee line for admin (shown separately so admin knows courier collects it)
+        if delivery_fee > 0:
+            km_str = f" ({delivery_km:.1f} km)" if delivery_km else ""
+            fee_line = f"\n🚗 Yetkazish haqi{km_str}: <b>{delivery_fee:,} so'm</b> (kuryerga to'lanadi)"
+        else:
+            fee_line = ""
+
         admin_txt = (
             f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
             f"{store_emoji} {store_name}\n\n"
@@ -1712,13 +1833,13 @@ async def handle_place_order(request):
             f"📞 <a href='tel:{phone}'>{phone}</a>\n"
             f"📍 {address}{loc_line}{yandex_line}{promo_line}\n\n"
             f"🛒 {items}\n"
-            f"💰 <b>Jami: {total:,} so'm</b>"
+            f"💰 <b>Ovqat: {total:,} so'm</b>{fee_line}"
         )
 
         kb = admin_order_kb(oid)
 
         async def _notify(chat_id: int, label: str):
-            if not chat_id: return False
+            if not chat_id: return None
             try:
                 sent = await bot.send_message(chat_id, admin_txt,
                                               parse_mode="HTML", reply_markup=kb)
@@ -1741,8 +1862,38 @@ async def handle_place_order(request):
 
         if sent:
             set_group_message_id(oid, sent.message_id)
-        else:
-            logger.error(f"Order #{oid}: no notification sent!")
+
+        # ── Auto-send to courier group (if store has delivery_group_id) ───────
+        delivery_group_id = (store.get("delivery_group_id") if store else None)
+        if delivery_group_id and delivery_fee > 0:
+            try:
+                km_str = f" ({delivery_km:.1f} km)" if delivery_km else ""
+                group_txt = (
+                    f"🚗 <b>Yetkazish buyurtmasi #{oid}</b>\n\n"
+                    f"📍 {address}"
+                )
+                if has_gps:
+                    group_txt += f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+                group_txt += (
+                    f"\n\n🛒 {items}\n"
+                    f"💰 Buyurtma: {total:,} so'm\n\n"
+                    f"💵 <b>Yetkazish haqi{km_str}: {delivery_fee:,} so'm</b>\n"
+                    f"<i>(Pul mijozdan yetkazgandan keyin olinadi)</i>\n\n"
+                    f"⚡ Birinchi qabul qilgan kuryer oladi!"
+                )
+                g_sent = await bot.send_message(
+                    int(delivery_group_id), group_txt,
+                    parse_mode="HTML",
+                    reply_markup=courier_group_kb(oid, delivery_fee)
+                )
+                if has_gps:
+                    try:
+                        await bot.send_location(int(delivery_group_id), lat, lon,
+                                                reply_to_message_id=g_sent.message_id)
+                    except Exception: pass
+                logger.info(f"Order #{oid} → courier_group({delivery_group_id}) ✓")
+            except Exception as e:
+                logger.error(f"Order #{oid} → courier_group({delivery_group_id}) ✗ {e}")
 
         return web.json_response({"status": "ok", "order_id": oid})
 
