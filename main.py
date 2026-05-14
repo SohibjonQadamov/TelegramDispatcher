@@ -48,6 +48,10 @@ if not BOT_TOKEN or not GROUP_CHAT_ID:
 DB_PATH = Path("orders.db")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()   # Neon/Render PostgreSQL URL
 USE_PG = bool(DATABASE_URL)
+
+# ── Global bot / dispatcher — set in main(), used by HTTP handlers ──────────
+bot: "Bot | None" = None
+dp:  "Dispatcher | None" = None
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
 # Auto-detect URL: WEBAPP_URL env → RENDER_EXTERNAL_URL (set automatically by Render) → fallback
 WEBAPP_URL = (
@@ -2526,11 +2530,9 @@ async def handle_stats(request):
         "weekly": weekly,
     })
 
-# 1. Portni dinamik qiling (Kodingizning tepa qismida)
-WEBAPP_PORT = int(os.environ.get("PORT", 10000))
-
-
 async def main():
+    global bot, dp  # make bot/dp accessible from HTTP handlers
+
     # 1. Ma'lumotlar bazasini yangilash
     init_db()
 
