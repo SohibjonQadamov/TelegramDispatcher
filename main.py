@@ -123,7 +123,7 @@ _TABLES_SQL = [
         id {id_def},
         store_id INTEGER,
         name TEXT, price INTEGER,
-        desc TEXT, emoji TEXT, cat TEXT,
+        prod_desc TEXT, emoji TEXT, cat TEXT,
         old_price INTEGER, discount_qty INTEGER, discount_end TEXT
     )""",
     # ratings
@@ -249,7 +249,7 @@ def _init_db_pg():
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
-                "ALTER TABLE products ADD COLUMN IF NOT EXISTS desc TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS prod_desc TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS emoji TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS cat TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price INTEGER",
@@ -322,7 +322,7 @@ def _init_db_sqlite():
             "ALTER TABLE products ADD COLUMN store_id INTEGER",
             "ALTER TABLE products ADD COLUMN name TEXT",
             "ALTER TABLE products ADD COLUMN price INTEGER",
-            "ALTER TABLE products ADD COLUMN desc TEXT",
+            "ALTER TABLE products ADD COLUMN prod_desc TEXT",
             "ALTER TABLE products ADD COLUMN emoji TEXT",
             "ALTER TABLE products ADD COLUMN cat TEXT",
             "ALTER TABLE products ADD COLUMN old_price INTEGER",
@@ -1299,7 +1299,7 @@ async def prod_emoji(msg: Message, state: FSMContext):
 async def prod_cat(msg: Message, state: FSMContext):
     d = await state.get_data()
     db_execute(
-        "INSERT INTO products (store_id, name, price, desc, emoji, cat) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat) VALUES (?, ?, ?, ?, ?, ?)",
         (d['store_id'], d['p_name'], d['p_price'], d['p_desc'], d['p_emoji'], msg.text)
     )
     await state.clear()
@@ -1366,7 +1366,7 @@ async def handle_api_data(request):
             "id": p['id'],
             "name": p['name'] or '',
             "price": p['price'] or 0,
-            "desc": p.get('desc') or '',
+            "desc": p.get('prod_desc') or p.get('desc') or '',
             "emoji": p['emoji'] or '🍽️',
             "cat": p['cat'] or '',
             "store_id": p['store_id'],
@@ -1467,7 +1467,7 @@ async def handle_update_product(request):
         p_id       = data.get('id')
         name       = (data.get('name') or '').strip()
         price      = int(data.get('price') or 0)
-        desc       = (data.get('desc') or data.get('description') or '').strip()
+        desc       = (data.get('desc') or data.get('prod_desc') or data.get('description') or '').strip()
         emoji      = (data.get('emoji') or '🍽️').strip()
         cat        = (data.get('cat') or '').strip()
         old_price  = data.get('old_price') or None
@@ -1481,12 +1481,12 @@ async def handle_update_product(request):
 
         if p_id:
             db_execute(
-                "UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=? WHERE id=? AND store_id=?",
+                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=? WHERE id=? AND store_id=?",
                 (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, int(p_id), store['id'])
             )
         else:
             db_execute(
-                "INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat)
             )
         logger.info(f"Product saved: store={store['id']} name={name}")
