@@ -38,6 +38,7 @@ GROUP_CHAT_ID = int((os.getenv("GROUP_CHAT_ID") or "0").strip() or 0)
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "").split(",") if x.strip()]
 PAYME_KEY = os.getenv("PAYME_KEY", "")
 CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID", "")
+PLATFORM_COMMISSION_PCT = float(os.getenv("PLATFORM_COMMISSION_PCT", "2.0"))  # % admindan
 CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY", "")
 YANDEX_DELIVERY_TOKEN = os.getenv("YANDEX_DELIVERY_TOKEN", "")
 YANDEX_DELIVERY_URL = "https://b2b.taxi.yandex.net/b2b/cargo/integration/v2"
@@ -2806,25 +2807,28 @@ async def handle_stats(request):
 
     store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
     store_cond = " AND store_id=?" if store else ""
-    store_p = (store['id'],) if store else ()
+    store_p    = (store['id'],) if store else ()
 
-    today = date.today().isoformat()
+    today_s  = date.today().isoformat()
+    week_s   = (date.today() - timedelta(days=6)).isoformat()
+    month_s  = (date.today() - timedelta(days=29)).isoformat()
 
-    today_row = db_fetchone(
-        f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE created_at LIKE ?{store_cond}",
-        (today + '%',) + store_p
-    ) or {}
+    def _q(where_extra, params):
+        return db_fetchone(
+            f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE {where_extra}{store_cond}",
+            params + store_p
+        ) or {}
 
-    total_row = db_fetchone(
-        f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE 1=1{store_cond}",
-        store_p
-    ) or {}
-
+    today_row  = _q("created_at LIKE ?",            (today_s + '%',))
+    week_row   = _q("created_at >= ?",              (week_s,))
+    month_row  = _q("created_at >= ?",              (month_s,))
+    total_row  = _q("1=1",                          ())
     active_row = db_fetchone(
-        f"SELECT COUNT(*) as cnt FROM orders WHERE status='IN_PROGRESS'{store_cond}",
+        f"SELECT COUNT(*) as cnt FROM orders WHERE status IN ('NEW','IN_PROGRESS'){store_cond}",
         store_p
     ) or {}
 
+    # Weekly chart (last 7 days)
     weekly = []
     for i in range(6, -1, -1):
         d = (date.today() - timedelta(days=i)).isoformat()
@@ -2834,13 +2838,70 @@ async def handle_stats(request):
         ) or {}
         weekly.append({"date": d, "count": row.get('cnt', 0), "revenue": row.get('rev', 0)})
 
+    # Hourly heatmap — real data for last 30 days
+    # Returns list of {hour, dow, cnt} where dow=0(Mon)..6(Sun)
+    all_orders = db_fetchall(
+        f"SELECT created_at FROM orders WHERE created_at >= ?{store_cond}",
+        (month_s,) + store_p
+    )
+    heat = {}  # (dow, hour) -> count
+    for o in all_orders:
+        try:
+            dt = datetime.fromisoformat((o['created_at'] or '').replace('Z', '+00:00'))
+            # Convert UTC to UTC+5 (Tashkent)
+            dt_local = dt + timedelta(hours=5)
+            dow  = dt_local.weekday()   # 0=Mon … 6=Sun
+            hour = (dt_local.hour // 2) * 2   # group into 2-hour buckets
+            heat[(dow, hour)] = heat.get((dow, hour), 0) + 1
+        except Exception:
+            pass
+    hourly = [{"dow": k[0], "hour": k[1], "cnt": v} for k, v in heat.items()]
+
+    # Top products — parse from order items strings (last 30 days)
+    prod_counts: dict[str, int] = {}
+    recent_orders = db_fetchall(
+        f"SELECT items FROM orders WHERE created_at >= ?{store_cond}",
+        (month_s,) + store_p
+    )
+    import re as _re
+    for o in recent_orders:
+        raw = o.get('items') or ''
+        # Format: "🍔 Burger x2, 🍟 Fri x1"
+        for part in raw.split(','):
+            part = part.strip()
+            m = _re.match(r'^(.*?)\s+x(\d+)$', part)
+            if m:
+                name = m.group(1).strip()
+                qty  = int(m.group(2))
+                prod_counts[name] = prod_counts.get(name, 0) + qty
+    top_products = sorted(prod_counts.items(), key=lambda x: -x[1])[:7]
+
+    # Commission calculation
+    def _commission(rev: int) -> int:
+        return int(rev * PLATFORM_COMMISSION_PCT / 100)
+
+    today_rev  = int(today_row.get('rev', 0))
+    week_rev   = int(week_row.get('rev', 0))
+    month_rev  = int(month_row.get('rev', 0))
+    total_rev  = int(total_row.get('rev', 0))
+
     return web.json_response({
-        "today_orders": today_row.get('cnt', 0),
-        "today_revenue": today_row.get('rev', 0),
-        "total_orders": total_row.get('cnt', 0),
-        "total_revenue": total_row.get('rev', 0),
-        "active_deliveries": active_row.get('cnt', 0),
-        "weekly": weekly,
+        "today_orders":   int(today_row.get('cnt', 0)),
+        "today_revenue":  today_rev,
+        "week_orders":    int(week_row.get('cnt', 0)),
+        "week_revenue":   week_rev,
+        "month_orders":   int(month_row.get('cnt', 0)),
+        "month_revenue":  month_rev,
+        "total_orders":   int(total_row.get('cnt', 0)),
+        "total_revenue":  total_rev,
+        "active_deliveries": int(active_row.get('cnt', 0)),
+        "weekly":         weekly,
+        "hourly":         hourly,
+        "top_products":   [{"name": n, "cnt": c} for n, c in top_products],
+        "commission_pct":   PLATFORM_COMMISSION_PCT,
+        "commission_today": _commission(today_rev),
+        "commission_week":  _commission(week_rev),
+        "commission_month": _commission(month_rev),
     })
 
 async def main():

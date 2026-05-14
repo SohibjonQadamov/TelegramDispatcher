@@ -926,7 +926,7 @@ function renderDash() {
       <div class="stat-icon" style="background:#E8F5E9">💰</div>
       <div class="stat-lbl">Bugun daromad</div>
       <div class="stat-val">${fmt(stats.today_revenue)}</div>
-      <div class="stat-trend" style="color:var(--text3)">so'm</div>
+      <div class="stat-trend down" style="font-size:10px">−${fmt(stats.commission_today||0)} komissiya</div>
     </div>
     <div class="stat-card" style="animation-delay:0.12s">
       <div class="stat-icon" style="background:#E3F2FD">🚗</div>
@@ -935,10 +935,10 @@ function renderDash() {
       <div class="stat-trend" style="color:var(--text3)">Hozirgi</div>
     </div>
     <div class="stat-card" style="animation-delay:0.18s">
-      <div class="stat-icon" style="background:#FFF9C4">📊</div>
-      <div class="stat-lbl">Jami buyurtma</div>
-      <div class="stat-val">${stats.total_orders||0}</div>
-      <div class="stat-trend" style="color:var(--text3)">Barcha vaqt</div>
+      <div class="stat-icon" style="background:#E8F5E9">📈</div>
+      <div class="stat-lbl">Hafta daromad</div>
+      <div class="stat-val">${fmt(stats.week_revenue||0)}</div>
+      <div class="stat-trend up" style="font-size:10px">sof: ${fmt((stats.week_revenue||0)-(stats.commission_week||0))}</div>
     </div>
   `;
   renderWeekChart();
@@ -1461,75 +1461,120 @@ function setPeriod(p, btn) {
 
 function renderAnalytics() {
   if (!stats) return;
-  const isToday = anPeriod === 'today';
-  const isWeek = anPeriod === 'week';
-  const rev = isToday ? stats.today_revenue : isWeek ? (stats.week_revenue||stats.today_revenue*7) : (stats.month_revenue||stats.total_revenue);
-  const cnt = isToday ? stats.today_orders : isWeek ? (stats.week_orders||stats.today_orders*7) : (stats.total_orders);
-  const avgOrd = cnt > 0 ? Math.round(rev/cnt) : 0;
+  const isToday  = anPeriod === 'today';
+  const isWeek   = anPeriod === 'week';
+  const isMonth  = anPeriod === 'month';
 
-  const prodCounts = {};
-  orders.forEach(o => {
-    let items = [];
-    try { items = JSON.parse(o.items||'[]'); } catch(e) {
-      (o.items||'').split(',').forEach(s => { const m = s.trim().match(/(.+)\s+x(\d+)$/i); if(m) items.push({name:m[1].trim(),qty:parseInt(m[2])}); });
-    }
-    items.forEach(it => {
-      const nm = it.name||it;
-      prodCounts[nm] = (prodCounts[nm]||0) + (it.qty||1);
-    });
+  const rev  = isToday ? stats.today_revenue  : isWeek ? stats.week_revenue  : stats.month_revenue  || stats.total_revenue;
+  const cnt  = isToday ? stats.today_orders   : isWeek ? stats.week_orders   : stats.month_orders   || stats.total_orders;
+  const comm = isToday ? stats.commission_today: isWeek ? stats.commission_week: stats.commission_month || 0;
+  const net  = Math.max(0, rev - comm);
+  const avg  = cnt > 0 ? Math.round(rev / cnt) : 0;
+  const pct  = stats.commission_pct || 2;
+
+  // Top products from server (last 30 days)
+  const topProds = (stats.top_products || []).slice(0, 7);
+  const maxCnt   = topProds.length ? topProds[0].cnt : 1;
+
+  // Heatmap from real server data
+  const DAYS  = ['Du','Se','Ch','Pa','Ju','Sh','Ya'];
+  const HOURS = ['00','02','04','06','08','10','12','14','16','18','20','22'];
+  const heatMap = {};
+  (stats.hourly || []).forEach(h => { heatMap[`${h.dow}_${h.hour}`] = h.cnt; });
+  const heatMax = Math.max(1, ...Object.values(heatMap));
+
+  // Only show hours with any data (or 10:00-22:00 default)
+  const activeHours = HOURS.filter(h => {
+    const hr = parseInt(h);
+    return DAYS.some((_,d) => heatMap[`${d}_${hr}`]);
   });
-  const topProds = Object.entries(prodCounts).sort((a,b) => b[1]-a[1]).slice(0, 5);
-  const maxCnt = topProds.length ? topProds[0][1] : 1;
-
-  const heatData = [
-    [3,5,8,6,4,2,1],[4,7,12,9,5,3,2],[2,4,6,8,7,4,3],
-    [5,8,14,11,8,5,4],[3,6,9,7,5,3,2],[1,2,3,4,3,2,1],[2,4,6,5,3,2,1]
-  ];
-  const hours = ['10:00','12:00','14:00','16:00','18:00','20:00','22:00'];
-  const heatMax = 14;
+  const displayHours = activeHours.length > 0 ? activeHours : ['10','12','14','16','18','20','22'];
 
   document.getElementById('anBlock').innerHTML = `
-    <div class="an-row">
-      <div class="an-card" style="animation-delay:0s"><div class="an-icon">💰</div><div class="an-lbl">Daromad</div><div class="an-val">${fmt(rev)}</div><div class="an-change up" style="font-size:11px">so'm</div></div>
-      <div class="an-card" style="animation-delay:0.06s"><div class="an-icon">📦</div><div class="an-lbl">Buyurtmalar</div><div class="an-val">${cnt}</div><div class="an-change" style="color:var(--text3);font-size:11px">ta</div></div>
-      <div class="an-card" style="animation-delay:0.12s"><div class="an-icon">📈</div><div class="an-lbl">O'rtacha summa</div><div class="an-val">${fmt(avgOrd)}</div><div class="an-change" style="color:var(--text3);font-size:11px">so'm</div></div>
-      <div class="an-card" style="animation-delay:0.18s"><div class="an-icon">🚗</div><div class="an-lbl">Aktiv yetkazish</div><div class="an-val">${stats.active_deliveries||0}</div><div class="an-change" style="color:var(--text3);font-size:11px">ta</div></div>
+    <!-- Revenue + commission summary card -->
+    <div class="card" style="margin:0 0 10px;background:linear-gradient(135deg,#1A1A2E,#2d2d44);color:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:11px;font-weight:700;opacity:.6;text-transform:uppercase;letter-spacing:.5px">
+            ${isToday?'Bugungi':''}${isWeek?'Haftalik':''}${isMonth?'Oylik':''} daromad
+          </div>
+          <div style="font-size:30px;font-weight:900;letter-spacing:-1.5px;margin-top:4px">${fmt(rev)}</div>
+          <div style="font-size:12px;opacity:.55;margin-top:2px">so'm · ${cnt} ta buyurtma</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:10px;font-weight:700;opacity:.55;text-transform:uppercase">Platforma (${pct}%)</div>
+          <div style="font-size:18px;font-weight:800;color:#EF9A9A;margin-top:2px">−${fmt(comm)}</div>
+          <div style="font-size:11px;font-weight:700;color:#A5D6A7;margin-top:6px">Sof: ${fmt(net)} so'm</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;background:rgba(255,255,255,.08);border-radius:8px;overflow:hidden;height:6px">
+        <div style="height:100%;background:var(--red);width:${Math.min(100,pct*5)}%;border-radius:8px;transition:width .6s"></div>
+      </div>
     </div>
 
+    <div class="an-row">
+      <div class="an-card" style="animation-delay:0s"><div class="an-icon">📦</div><div class="an-lbl">Buyurtmalar</div><div class="an-val">${cnt}</div><div class="an-change" style="color:var(--text3);font-size:11px">ta</div></div>
+      <div class="an-card" style="animation-delay:0.06s"><div class="an-icon">📊</div><div class="an-lbl">O'rtacha summa</div><div class="an-val">${fmt(avg)}</div><div class="an-change" style="color:var(--text3);font-size:11px">so'm</div></div>
+      <div class="an-card" style="animation-delay:0.12s"><div class="an-icon">🚗</div><div class="an-lbl">Aktiv</div><div class="an-val">${stats.active_deliveries||0}</div><div class="an-change" style="color:var(--text3);font-size:11px">ta</div></div>
+      <div class="an-card" style="animation-delay:0.18s"><div class="an-icon">💎</div><div class="an-lbl">Jami daromad</div><div class="an-val">${fmt(stats.total_revenue||0)}</div><div class="an-change up" style="font-size:10px">barcha vaqt</div></div>
+    </div>
+
+    <!-- Weekly chart -->
+    <div class="card" style="margin:0 0 10px">
+      <div class="card-hd" style="margin-bottom:10px">
+        <span class="card-title" style="margin-bottom:0">📅 Haftalik buyurtmalar</span>
+      </div>
+      <div class="chart-wrap" style="height:80px">
+        ${(stats.weekly||[]).map(d => {
+          const maxRev = Math.max(1,...(stats.weekly||[]).map(w=>w.revenue));
+          const h = Math.round((d.revenue/maxRev)*100);
+          const isToday2 = d.date === new Date().toISOString().slice(0,10);
+          return `<div class="bar-col">
+            <div class="bar" style="height:${h}%;background:${isToday2?'var(--red)':'var(--red-l)'};border-radius:6px 6px 2px 2px;min-height:${d.revenue>0?'4px':'0'};transition:height .5s"></div>
+            <div style="font-size:9px;color:var(--text3);margin-top:3px;font-weight:${isToday2?'800':'600'}">${new Date(d.date+'T00:00').toLocaleDateString('uz',{weekday:'short'})}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Top products (real) -->
     <div class="top-prods">
       <div class="card-hd" style="margin-bottom:8px">
-        <span class="card-title" style="margin-bottom:0">🏆 Top mahsulotlar</span>
+        <span class="card-title" style="margin-bottom:0">🏆 Top mahsulotlar (30 kun)</span>
       </div>
-      ${topProds.length ? topProds.map(([name,cnt],i) => {
-        const emoji = products.find(p => p.name===name)?.emoji || '🍽️';
-        const pct = Math.round((cnt/maxCnt)*100);
+      ${topProds.length ? topProds.map((p,i) => {
+        const emoji = products.find(pr => pr.name===p.name)?.emoji || '🍽️';
+        const barW  = Math.round((p.cnt/maxCnt)*100);
         return `<div class="tp-item">
           <div class="tp-rank ${i===0?'gold':''}">${i+1}</div>
           <div class="tp-em">${emoji}</div>
           <div style="flex:1;min-width:0">
-            <div class="tp-name" style="font-size:13px">${name}</div>
-            <div class="tp-bar-wrap"><div class="tp-bar" style="width:${pct}%"></div></div>
+            <div class="tp-name" style="font-size:13px">${p.name}</div>
+            <div class="tp-bar-wrap"><div class="tp-bar" style="width:${barW}%"></div></div>
           </div>
-          <div class="tp-cnt">${cnt} ta</div>
+          <div class="tp-cnt">${p.cnt} ta</div>
         </div>`;
       }).join('') : '<div style="padding:20px 0;text-align:center;color:var(--text3);font-size:13px">Hali buyurtmalar yo\'q</div>'}
     </div>
 
-    <div class="card" style="margin:0">
-      <div class="card-hd" style="margin-bottom:12px">
-        <span class="card-title" style="margin-bottom:0">🔥 Tig'iz vaqtlar</span>
+    <!-- Heatmap (real) -->
+    <div class="card" style="margin:0 0 10px">
+      <div class="card-hd" style="margin-bottom:10px">
+        <span class="card-title" style="margin-bottom:0">🔥 Tig'iz vaqtlar (30 kun)</span>
       </div>
-      <div style="display:grid;grid-template-columns:40px 1fr;gap:6px;align-items:center">
-        ${hours.map((h,r) => {
-          const cells = heatData[r].map(v => {
-            const lvl = v >= heatMax*0.8 ? 'h4' : v >= heatMax*0.5 ? 'h3' : v >= heatMax*0.2 ? 'h2' : v > 0 ? 'h1' : '';
-            return `<div class="hm-cell ${lvl}">${v>0?v:''}</div>`;
+      <div style="display:grid;grid-template-columns:32px 1fr;gap:4px;align-items:center">
+        ${displayHours.map(h => {
+          const hr = parseInt(h);
+          const cells = DAYS.map((_,d) => {
+            const v   = heatMap[`${d}_${hr}`] || 0;
+            const lvl = v >= heatMax*0.75 ? 'h4' : v >= heatMax*0.5 ? 'h3' : v >= heatMax*0.2 ? 'h2' : v > 0 ? 'h1' : '';
+            return `<div class="hm-cell ${lvl}" title="${v} buyurtma">${v>0&&v>1?v:''}</div>`;
           }).join('');
-          return `<span style="font-size:10px;font-weight:700;color:var(--text3);text-align:right;padding-right:6px">${h}</span><div class="heatmap-grid">${cells}</div>`;
+          return `<span style="font-size:9px;font-weight:700;color:var(--text3);text-align:right;padding-right:5px">${h}:00</span><div class="heatmap-grid">${cells}</div>`;
         }).join('')}
         <span></span>
-        <div class="heatmap-grid" style="margin-top:4px">
-          ${['Du','Se','Ch','Pa','Ju','Sh','Ya'].map(d=>`<div class="hm-day">${d}</div>`).join('')}
+        <div class="heatmap-grid" style="margin-top:2px">
+          ${DAYS.map(d=>`<div class="hm-day">${d}</div>`).join('')}
         </div>
       </div>
     </div>
