@@ -1538,8 +1538,9 @@ function openStore(id) {
 function searchMenu(q) {
   const prods = menu[curStore] || [];
   const s = q.trim().toLowerCase();
-  if (!s) { renderMProds(curMenuCat === 'all' ? prods : prods.filter(p => p.cat === curMenuCat)); return; }
-  renderMProds(prods.filter(p => (p.name||'').toLowerCase().includes(s) || (p.desc||'').toLowerCase().includes(s) || (p.cat||'').toLowerCase().includes(s)));
+  let list = curMenuCat === 'all' ? prods : prods.filter(p => p.cat === curMenuCat);
+  if (s) list = list.filter(p => (p.name||'').toLowerCase().includes(s) || (p.desc||'').toLowerCase().includes(s));
+  renderMProds(list);
 }
 
 function filterMCat(cat, btn) {
@@ -1547,6 +1548,8 @@ function filterMCat(cat, btn) {
   document.querySelectorAll('.mcb').forEach(b=>b.classList.remove('on'));
   btn.classList.add('on');
   hap.light();
+  const inp = document.getElementById('menuSearchInp');
+  if (inp) inp.value = '';  // BUG6 fix: clear search when switching category
   const p = menu[curStore]||[];
   renderMProds(cat==='all' ? p : p.filter(x=>x.cat===cat));
 }

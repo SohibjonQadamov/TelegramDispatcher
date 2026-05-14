@@ -1310,18 +1310,33 @@ async def courier_take(cb: CallbackQuery):
     if not order:
         await cb.answer("Buyurtma topilmadi", show_alert=True); return
 
-    # Check if already taken by someone else
-    existing = order.get("delivery_courier_id")
-    if existing:
-        taker = order.get("delivery_courier_name") or "boshqa kuryer"
+    # Atomic claim — only succeeds if no courier assigned yet
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE orders SET delivery_courier_id=%s, delivery_courier_name=%s WHERE id=%s AND delivery_courier_id IS NULL",
+                    (cb.from_user.id, cb.from_user.full_name, oid)
+                )
+                claimed = cur.rowcount == 1
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE orders SET delivery_courier_id=?, delivery_courier_name=? WHERE id=? AND delivery_courier_id IS NULL",
+                (cb.from_user.id, cb.from_user.full_name, oid)
+            )
+            conn.commit()
+            claimed = cur.rowcount == 1
+
+    if not claimed:
+        order = get_order(oid)
+        taker = (order.get("delivery_courier_name") or "boshqa kuryer") if order else "boshqa kuryer"
         await cb.answer(f"❌ Bu buyurtmani allaqachon {taker} oldi!", show_alert=True)
         return
-
-    # Claim the order for this courier
-    db_execute(
-        "UPDATE orders SET delivery_courier_id=?, delivery_courier_name=? WHERE id=?",
-        (cb.from_user.id, cb.from_user.full_name, oid)
-    )
 
     courier_name = cb.from_user.full_name or cb.from_user.first_name or "Kuryer"
     fee = order.get("delivery_fee") or 0
@@ -1761,6 +1776,7 @@ async def handle_update_store(request):
             try: edit_store_id = int(edit_store_id)
             except: edit_store_id = None
 
+        returned_id = edit_store_id
         if edit_store_id:
             db_execute(
                 "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=?, base_delivery_fee=?, price_per_km=?, delivery_group_id=?, branch_label=? WHERE id=? AND admin_id=?",
@@ -1768,14 +1784,30 @@ async def handle_update_store(request):
             )
             logger.info(f"Store branch updated: id={edit_store_id} admin_id={admin_id} name={name}")
         else:
-            # Create new branch
-            db_execute(
-                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
-            )
-            logger.info(f"Store branch created: admin_id={admin_id} name={name}")
+            # Create new branch — return new id so frontend sets curBranchId
+            if USE_PG:
+                conn = _pg_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            _pg("INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"),
+                            (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
+                        )
+                        returned_id = cur.fetchone()["id"]
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cur = conn.execute(
+                        "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
+                    )
+                    conn.commit()
+                    returned_id = cur.lastrowid
+            logger.info(f"Store branch created: id={returned_id} admin_id={admin_id} name={name}")
 
-        return web.json_response({"status": "ok", "name": name})
+        return web.json_response({"status": "ok", "name": name, "store_id": returned_id})
 
     except Exception as e:
         logger.exception(f"handle_update_store error: {e}")
@@ -3034,6 +3066,11 @@ async def handle_stats(request):
         return web.json_response({"error": "invalid admin_id"}, status=400)
 
     store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    if not store and admin_id_int not in ADMIN_IDS:
+        return web.json_response({"today_orders":0,"today_revenue":0,"week_orders":0,"week_revenue":0,
+            "month_orders":0,"month_revenue":0,"total_orders":0,"total_revenue":0,
+            "active_deliveries":0,"weekly":[],"hourly":[],"top_products":[],
+            "commission_pct":PLATFORM_COMMISSION_PCT,"commission_today":0,"commission_week":0,"commission_month":0})
     store_cond = " AND store_id=?" if store else ""
     store_p    = (store['id'],) if store else ()
 
