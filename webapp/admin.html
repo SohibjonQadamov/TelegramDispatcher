@@ -797,6 +797,10 @@ async function loadAll() {
   }
   await Promise.all([loadAdminData(), loadStats(), loadOrders(), loadSubscription(), loadRatings(), loadBranding()]);
   startOrdersRefresh(); // auto-refresh orders every 20s
+  // Request browser notification permission silently
+  if (Notification?.permission === 'default') {
+    try { Notification.requestPermission(); } catch(e) {}
+  }
 }
 
 async function loadAdminData() {
@@ -873,17 +877,44 @@ function stopOrdersRefresh() {
   if (_ordersRefreshTimer) { clearInterval(_ordersRefreshTimer); _ordersRefreshTimer = null; }
 }
 
+// ── NOTIFICATION SOUND (Web Audio API — no external file needed) ──
+function playOrderSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const notes = [880, 1047, 1319]; // A5 C6 E6 — ascending ding
+    notes.forEach((freq, i) => {
+      const osc  = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t = ctx.currentTime + i * 0.13;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.35, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.38);
+      osc.start(t); osc.stop(t + 0.4);
+    });
+  } catch(e) {}
+}
+
 async function loadOrders() {
   try {
     const r = await fetch(`/api/orders?admin_id=${ADMIN_ID}`);
     const d = await r.json();
-    const prevNewCount = orders.filter(o => o.status === 'NEW').length;
+    const prevIds = new Set(orders.map(o => o.id));
     orders = d.orders || [];
-    // Show toast if new order arrived
-    const newCount = orders.filter(o => o.status === 'NEW').length;
-    if (newCount > prevNewCount) {
-      showToast(`🆕 Yangi buyurtma keldi! (${newCount} ta)`);
+    const newOrders = orders.filter(o => o.status === 'NEW' && !prevIds.has(o.id));
+    if (newOrders.length > 0) {
+      playOrderSound();
       try { tg.HapticFeedback?.notificationOccurred('success'); } catch(e) {}
+      showToast(`🆕 ${newOrders.length} ta yangi buyurtma!`);
+      // Browser notification (if permission granted)
+      if (Notification?.permission === 'granted') {
+        new Notification('🆕 Yangi buyurtma!', {
+          body: newOrders.map(o => `#${o.id} — ${o.full_name}`).join('\n'),
+          icon: '/favicon.ico', tag: 'new-order', renotify: true,
+        });
+      }
     }
     updateOrderCounts();
     renderOrders();
