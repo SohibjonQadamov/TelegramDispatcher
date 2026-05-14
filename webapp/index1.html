@@ -168,6 +168,9 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 /* Order info overlay */
 #order-info-ov{display:flex}
 #order-info-ov.gone{display:none !important}
+/* Store info overlay */
+#store-info-ov{display:flex}
+#store-info-ov.gone{display:none !important}
 .reg-back{position:absolute;inset:0;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);animation:bdIn .22s ease}
 .reg-sheet{position:relative;z-index:1;background:var(--bg2);border-radius:24px 24px 0 0;padding-bottom:var(--sb);animation:sheetUp .32s cubic-bezier(.32,.72,0,1);max-height:80vh;overflow-y:auto}
 .reg-hd{padding:18px 20px 12px;font-size:20px;font-weight:700;letter-spacing:-.3px;display:flex;justify-content:space-between;align-items:center}
@@ -790,6 +793,15 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
   <div class="succ-dots"><div class="succ-dot"></div><div class="succ-dot"></div><div class="succ-dot"></div></div>
 </div>
 
+<!-- STORE INFO SHEET -->
+<div id="store-info-ov" class="gone" style="position:fixed;inset:0;z-index:265;flex-direction:column;justify-content:flex-end">
+  <div onclick="document.getElementById('store-info-ov').classList.add('gone')" style="position:absolute;inset:0;background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);animation:bdIn .22s ease"></div>
+  <div style="position:relative;z-index:1;background:var(--bg2);border-radius:28px 28px 0 0;padding:0 20px calc(20px + var(--sb));animation:sheetUp .38s cubic-bezier(.32,.72,0,1);max-height:88vh;overflow-y:auto">
+    <div style="padding:12px 0 0;display:flex;justify-content:center"><div style="width:36px;height:4px;background:var(--sep2);border-radius:2px"></div></div>
+    <div id="storeInfoContent"></div>
+  </div>
+</div>
+
 <!-- REGION SHEET -->
 <div id="region-ov" class="gone">
   <div class="reg-back" onclick="closeRegionPicker()"></div>
@@ -1307,13 +1319,73 @@ const BGTAB = [
 
 function storeCardHTML(s, i, compact=false) {
   const h = compact ? 'height:148px' : '';
-  return `<div class="str-card" onclick="openStore(${s.id})" style="${h};min-width:${compact?'0':'180px'};background:${s.bg||BGTAB[i%BGTAB.length]};animation:fadeUp .32s ${i*.06}s both">
+  // compact cards go directly to store menu; home cards show info first
+  const click = compact ? `openStore(${s.id})` : `showStoreInfo(${s.id})`;
+  return `<div class="str-card" onclick="${click}" style="${h};min-width:${compact?'0':'180px'};background:${s.bg||BGTAB[i%BGTAB.length]};animation:fadeUp .32s ${i*.06}s both">
     <div class="sc-body">
       <div class="sc-em">${s.emoji||'🍽️'}</div>
       <div><div class="sc-name">${s.name}</div><div class="sc-meta">⭐ ${s.rating||'5.0'} &nbsp;•&nbsp; ${s.time||'25'} min</div></div>
     </div>
     <div class="sc-tag">${s.type||'Do\'kon'}</div>
   </div>`;
+}
+
+// Store info bottom sheet — show before entering the menu
+function showStoreInfo(id) {
+  const s = stores.find(x => x.id == id);
+  if (!s) { openStore(id); return; }
+  const isOpen = (() => {
+    try {
+      const now = new Date();
+      const isWE = now.getDay() === 0 || now.getDay() === 6;
+      const hrs = isWE ? (s.hours_weekend||'10:00-23:00') : (s.hours_weekday||'09:00-22:00');
+      const [from, to] = hrs.split('-');
+      const [fh,fm] = from.split(':').map(Number);
+      const [th,tm] = to.split(':').map(Number);
+      const cur = now.getHours()*60 + now.getMinutes();
+      return cur >= fh*60+(fm||0) && cur <= th*60+(tm||0);
+    } catch(e){ return true; }
+  })();
+  const statusBadge = isOpen
+    ? `<span style="background:#E8F5E9;color:#2E7D32;padding:4px 10px;border-radius:10px;font-size:12px;font-weight:700">● Ochiq</span>`
+    : `<span style="background:#FFEBEE;color:#C62828;padding:4px 10px;border-radius:10px;font-size:12px;font-weight:700">● Yopiq</span>`;
+
+  document.getElementById('storeInfoContent').innerHTML = `
+    <div style="height:160px;border-radius:18px;background:${s.bg||BGTAB[0]};display:flex;align-items:center;justify-content:center;margin-top:14px;font-size:72px">
+      ${s.emoji||'🍽️'}
+    </div>
+    <div style="padding:16px 0 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:22px;font-weight:800;color:var(--lbl)">${s.name}</div>
+        ${statusBadge}
+      </div>
+      ${s.description ? `<div style="font-size:14px;color:var(--lbl2);margin-bottom:12px;line-height:1.4">${s.description}</div>` : ''}
+      <div style="display:flex;flex-direction:column;gap:8px;padding:14px;background:var(--bg);border-radius:14px;margin-bottom:12px">
+        <div style="display:flex;gap:10px">
+          <span>🕐</span>
+          <div>
+            <div style="font-size:12px;color:var(--lbl3);font-weight:600">Dushanba–Juma</div>
+            <div style="font-size:14px;font-weight:700">${s.hours_weekday||'09:00–22:00'}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <span>📅</span>
+          <div>
+            <div style="font-size:12px;color:var(--lbl3);font-weight:600">Shanba–Yakshanba</div>
+            <div style="font-size:14px;font-weight:700">${s.hours_weekend||'10:00–23:00'}</div>
+          </div>
+        </div>
+        ${s.address ? `<div style="display:flex;gap:10px"><span>📍</span><div style="font-size:14px;color:var(--lbl2)">${s.address}</div></div>` : ''}
+        ${s.phone ? `<div style="display:flex;gap:10px"><span>📞</span><a href="tel:${s.phone}" style="font-size:14px;color:var(--acc);font-weight:600;text-decoration:none">${s.phone}</a></div>` : ''}
+      </div>
+      <button onclick="openStore(${id});document.getElementById('store-info-ov').classList.add('gone')"
+        style="width:100%;padding:16px;border:none;border-radius:16px;background:var(--acc);color:#fff;font-size:16px;font-weight:700;cursor:pointer;font-family:var(--font);box-shadow:0 6px 20px rgba(198,40,40,.3)">
+        🍽️ Menyu ko'rish
+      </button>
+    </div>
+  `;
+  document.getElementById('store-info-ov').classList.remove('gone');
+  hap.light();
 }
 
 function renderStores(filter='all') {

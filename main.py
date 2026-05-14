@@ -589,28 +589,37 @@ async def leave_courier(msg: Message):
 # ================= ORDER FLOW =================
 # ================= WEB APP =================
 def admin_order_kb(oid: int) -> InlineKeyboardMarkup:
-    """Inline keyboard sent to store admin when a new order arrives."""
+    """NEW order — admin can accept or cancel."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"adm_accept:{oid}"),
             InlineKeyboardButton(text="❌ Bekor",         callback_data=f"adm_cancel:{oid}"),
         ],
+    ])
+
+def admin_order_kb_ready(oid: int) -> InlineKeyboardMarkup:
+    """IN_PROGRESS — admin marks ready → triggers Yandex automatically."""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚖 Yandex kuryer chaqirish", callback_data=f"adm_yandex:{oid}"),
+            InlineKeyboardButton(text="🟡 Tayyor bo'ldi → Yandex chaqir", callback_data=f"adm_ready:{oid}"),
+        ],
+        [
+            InlineKeyboardButton(text="❌ Bekor", callback_data=f"adm_cancel:{oid}"),
         ],
     ])
 
-
-def admin_order_kb_accepted(oid: int) -> InlineKeyboardMarkup:
-    """Keyboard after admin accepts the order."""
+def admin_order_kb_delivering(oid: int) -> InlineKeyboardMarkup:
+    """IN_DELIVERY — waiting for user confirmation."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚖 Yandex kuryer chaqirish", callback_data=f"adm_yandex:{oid}"),
+            InlineKeyboardButton(text="🎉 Yetkazildi (qo'lda)", callback_data=f"adm_done:{oid}"),
         ],
-        [
-            InlineKeyboardButton(text="🎉 Yetkazildi", callback_data=f"adm_done:{oid}"),
-            InlineKeyboardButton(text="❌ Bekor",       callback_data=f"adm_cancel:{oid}"),
-        ],
+    ])
+
+def user_received_kb(oid: int) -> InlineKeyboardMarkup:
+    """User presses this when they receive the order."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Qabul qildim!", callback_data=f"user_received:{oid}")]
     ])
 
 
@@ -727,7 +736,7 @@ async def webapp_handler(msg: Message, state: FSMContext):
         f"💰 <b>Jami: {total:,} so'm</b>"
     )
 
-    # ── Send notification — to admin personal chat AND group (both) ──
+    # ── Send notification — only to store admin (no group) ──
     async def _send_order_msg(chat_id: int, label: str):
         """Send order notification to a single chat. Returns True on success."""
         try:
@@ -752,11 +761,7 @@ async def webapp_handler(msg: Message, state: FSMContext):
     if admin_chat_id and admin_chat_id != uid:  # don't send to the buyer themselves
         sent_msg = await _send_order_msg(admin_chat_id, "admin_personal")
 
-    # 2) Always also send to group chat (if configured and different from admin)
-    if GROUP_CHAT_ID and GROUP_CHAT_ID != admin_chat_id:
-        gm = await _send_order_msg(GROUP_CHAT_ID, "group")
-        if not sent_msg:
-            sent_msg = gm
+    # Group chat: NOT used anymore — orders go only to store admin
 
     if sent_msg:
         set_group_message_id(oid, sent_msg.message_id)
@@ -976,29 +981,161 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
 
 
 # ─── ADMIN ORDER CALLBACKS ────────────────────────────────────────────────────
+async def _call_yandex(order: dict) -> tuple[bool, str]:
+    """Call Yandex Delivery API. Returns (success, claim_id_or_error)."""
+    oid = order['id']
+    store_id = order.get("store_id")
+    pickup_lat = pickup_lon = None
+    store_address = "Do'kon"
+    store_phone = "+998900000000"
+    if store_id:
+        s = db_fetchone("SELECT lat,lon,address,name,phone FROM stores WHERE id=?", (store_id,))
+        if s:
+            pickup_lat    = s.get("lat")
+            pickup_lon    = s.get("lon")
+            store_address = s.get("address") or s.get("name") or "Do'kon"
+            store_phone   = s.get("phone") or "+998900000000"
+
+    dlat, dlon = order.get("lat"), order.get("lon")
+    if not (pickup_lat and pickup_lon and dlat and dlon):
+        return False, "GPS koordinatalari to'liq emas (do'kon yoki buyurtma joylashuvi yo'q)"
+
+    payload = {
+        "callback_url": "",
+        "comment": f"Buyurtma #{oid}: {order.get('items','')}",
+        "items": [{"title": "Ovqat", "size": "S", "quantity": 1,
+                   "price": order.get("total", 0), "payment_method": "already_paid"}],
+        "route_points": [
+            {"visit_order": 1, "type": "source",
+             "address": {"fullname": store_address, "coordinates": [pickup_lon, pickup_lat]},
+             "contact": {"name": "Restoran", "phone": store_phone}},
+            {"visit_order": 2, "type": "destination",
+             "address": {"fullname": order.get("address","Manzil"), "coordinates": [dlon, dlat]},
+             "contact": {"name": order.get("full_name","Mijoz"),
+                         "phone": order.get("phone", "+998900000000")}},
+        ],
+        "skip_door_to_door": False,
+    }
+    headers = {"Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
+               "Content-Type": "application/json", "Accept-Language": "uz"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={oid}_{int(time.time())}",
+                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                result = await resp.json()
+                if resp.status in (200, 201):
+                    claim_id = result.get("id", "")
+                    db_execute("UPDATE orders SET yandex_claim_id=?, yandex_status='new', status='IN_DELIVERY' WHERE id=?",
+                               (claim_id, oid))
+                    return True, claim_id
+                else:
+                    return False, result.get("message") or str(result)
+    except Exception as e:
+        logger.exception(f"Yandex error: {e}")
+        return False, str(e)
+
+
 @router.callback_query(F.data.startswith("adm_accept:"))
 async def adm_accept(cb: CallbackQuery):
-    """Store admin accepts the order."""
+    """Admin accepts order → IN_PROGRESS, show 'Tayyor' button."""
     oid = int(cb.data.split(":")[1])
     order = get_order(oid)
-    if not order: await cb.answer("Buyurtma topilmadi", show_alert=True); return
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
 
     db_execute("UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=?",
                (cb.from_user.id, cb.from_user.full_name, now_iso(), oid))
-
-    # Update message keyboard
     try:
-        await cb.message.edit_reply_markup(reply_markup=admin_order_kb_accepted(oid))
+        await cb.message.edit_reply_markup(reply_markup=admin_order_kb_ready(oid))
     except Exception: pass
+    await cb.answer("✅ Qabul qilindi!")
 
-    await cb.answer("✅ Buyurtma qabul qilindi!")
-
-    # Notify customer
     uid = order.get("created_by_id")
     if uid:
         try:
             await cb.bot.send_message(int(uid),
-                f"🔧 <b>Buyurtma #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda. Tez orada yetkaziladi 🍔",
+                f"🔧 <b>Buyurtma #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda 🍔",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_ready:"))
+async def adm_ready(cb: CallbackQuery):
+    """Admin marks order READY → auto-call Yandex → send user 'Qabul qildim' button."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
+
+    await cb.answer("⏳ Yandex kuryer chaqirilmoqda...")
+
+    if YANDEX_DELIVERY_TOKEN:
+        ok, result = await _call_yandex(order)
+        if ok:
+            await cb.message.answer(
+                f"🚖 <b>Yandex kuryer yo'lga chiqdi!</b>\nClaim: <code>{result}</code>",
+                parse_mode="HTML", reply_markup=admin_order_kb_delivering(oid)
+            )
+            # Notify user with "Qabul qildim" button
+            uid = order.get("created_by_id")
+            if uid:
+                try:
+                    await cb.bot.send_message(int(uid),
+                        f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nKuryer yaqin kelmoqda.\nOlganingizdan so'ng tasdiqlang:",
+                        parse_mode="HTML", reply_markup=user_received_kb(oid))
+                except Exception: pass
+        else:
+            # Yandex failed — set IN_DELIVERY manually, notify user anyway
+            db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
+            await cb.message.answer(f"⚠️ Yandex xato: {result}\nBuyurtma 'Yo'lda' ga o'tkazildi.",
+                                    reply_markup=admin_order_kb_delivering(oid))
+            uid = order.get("created_by_id")
+            if uid:
+                try:
+                    await cb.bot.send_message(int(uid),
+                        f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nOlganingizdan so'ng tasdiqlang:",
+                        parse_mode="HTML", reply_markup=user_received_kb(oid))
+                except Exception: pass
+    else:
+        # No Yandex token — just mark IN_DELIVERY
+        db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
+        try:
+            await cb.message.edit_reply_markup(reply_markup=admin_order_kb_delivering(oid))
+        except Exception: pass
+        uid = order.get("created_by_id")
+        if uid:
+            try:
+                await cb.bot.send_message(int(uid),
+                    f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nOlganingizdan so'ng tasdiqlang:",
+                    parse_mode="HTML", reply_markup=user_received_kb(oid))
+            except Exception: pass
+
+
+@router.callback_query(F.data.startswith("user_received:"))
+async def user_received(cb: CallbackQuery):
+    """User confirms they received the order → notify admin, mark DELIVERED."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
+    if order.get("status") == "DELIVERED":
+        await cb.answer("Allaqachon tasdiqlangan", show_alert=True); return
+
+    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("✅ Rahmat! Buyurtma tasdiqlandi.")
+    await cb.message.reply("🎉 Rahmat! Yaxshi ovqatlanishingizni tilaymiz! 😊")
+
+    # Notify store admin
+    admin_chat = order.get("target_chat_id") or order.get("accepted_by_id")
+    if admin_chat:
+        try:
+            await cb.bot.send_message(int(admin_chat),
+                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n"
+                f"👤 {order.get('full_name','-')}\n"
+                f"💰 {order.get('total',0):,} so'm\n\n"
+                f"Buyurtma muvaffaqiyatli yakunlandi ✅",
                 parse_mode="HTML")
         except Exception: pass
 
@@ -1015,18 +1152,18 @@ async def adm_cancel(cb: CallbackQuery):
     except Exception: pass
     await cb.answer("❌ Bekor qilindi")
 
-    # Notify customer
     uid = order.get("created_by_id")
     if uid:
         try:
             await cb.bot.send_message(int(uid),
-                f"❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nKechirasiz, tez orada qayta urinib ko'ring.",
+                f"❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nKechirasiz, qayta urinib ko'ring.",
                 parse_mode="HTML")
         except Exception: pass
 
 
 @router.callback_query(F.data.startswith("adm_done:"))
 async def adm_done(cb: CallbackQuery):
+    """Manual delivery confirmation by admin."""
     oid = int(cb.data.split(":")[1])
     db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), oid))
     try:
@@ -1039,94 +1176,8 @@ async def adm_done(cb: CallbackQuery):
     if uid:
         try:
             await cb.bot.send_message(int(uid),
-                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n\nRahmat! Yaxshi ovqatlanishingizni tilaymiz 😊",
-                parse_mode="HTML")
+                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n\nRahmat! 😊", parse_mode="HTML")
         except Exception: pass
-
-
-@router.callback_query(F.data.startswith("adm_yandex:"))
-async def adm_yandex(cb: CallbackQuery):
-    """Admin requests Yandex Go courier for this order."""
-    oid = int(cb.data.split(":")[1])
-    order = get_order(oid)
-    if not order: await cb.answer("Buyurtma topilmadi", show_alert=True); return
-
-    if not YANDEX_DELIVERY_TOKEN:
-        await cb.answer("❌ Yandex token sozlanmagan.\nRender > Environment > YANDEX_DELIVERY_TOKEN", show_alert=True)
-        return
-
-    # Get store GPS for pickup
-    store_id = order.get("store_id")
-    pickup_lat, pickup_lon = None, None
-    store_address = "Do'kon manzili"
-    if store_id:
-        s = db_fetchone("SELECT lat,lon,address,name FROM stores WHERE id=?", (store_id,))
-        if s:
-            pickup_lat  = s.get("lat")
-            pickup_lon  = s.get("lon")
-            store_address = s.get("address") or s.get("name") or "Do'kon"
-
-    delivery_lat = order.get("lat")
-    delivery_lon = order.get("lon")
-
-    if not (pickup_lat and pickup_lon and delivery_lat and delivery_lon):
-        await cb.answer(
-            "❌ GPS koordinatalari yo'q.\n"
-            "Do'kon va buyurtma GPS lokatsiyasi bo'lishi kerak.",
-            show_alert=True
-        )
-        return
-
-    await cb.answer("⏳ Yandex kuryer so'rovnomasi yuborilmoqda...")
-
-    async with aiohttp.ClientSession() as session:
-        payload = {
-            "callback_url": "",
-            "comment": f"Buyurtma #{oid}: {order.get('items','')}",
-            "items": [{"title": "Ovqat yetkazib berish", "size": "S", "quantity": 1, "price": order.get("total", 0), "payment_method": "already_paid"}],
-            "route_points": [
-                {
-                    "visit_order": 1,
-                    "address": {"fullname": store_address, "coordinates": [pickup_lon, pickup_lat]},
-                    "contact": {"name": "Restoran", "phone": "+99890000000"},
-                    "type": "source"
-                },
-                {
-                    "visit_order": 2,
-                    "address": {"fullname": order.get("address","Manzil"), "coordinates": [delivery_lon, delivery_lat]},
-                    "contact": {"name": order.get("full_name","Mijoz"), "phone": order.get("phone", "+99890000000")},
-                    "type": "destination"
-                }
-            ],
-            "skip_door_to_door": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
-            "Content-Type": "application/json",
-            "Accept-Language": "uz"
-        }
-        try:
-            async with session.post(
-                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={oid}_{int(time.time())}",
-                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                result = await resp.json()
-                if resp.status in (200, 201):
-                    claim_id = result.get("id", "")
-                    db_execute("UPDATE orders SET yandex_claim_id=?, yandex_status='new' WHERE id=?",
-                               (claim_id, oid))
-                    await cb.message.answer(
-                        f"🚖 <b>Yandex kuryer chaqirildi!</b>\n"
-                        f"Buyurtma #{oid}\n"
-                        f"Claim ID: <code>{claim_id}</code>",
-                        parse_mode="HTML"
-                    )
-                else:
-                    err = result.get("message") or str(result)
-                    await cb.message.answer(f"❌ Yandex xato: {err}")
-        except Exception as e:
-            logger.exception(f"Yandex claim error: {e}")
-            await cb.message.answer(f"❌ Yandex ulanish xatosi: {e}")
 
 
 # ================= CALLBACKS =================
@@ -1600,13 +1651,11 @@ async def handle_place_order(request):
                 return None
 
         sent = None
-        # Send to admin personal chat
+        # Send ONLY to store admin's personal chat
         if admin_chat_id:
             sent = await _notify(admin_chat_id, "admin")
-        # Also send to group chat
-        if GROUP_CHAT_ID and GROUP_CHAT_ID != admin_chat_id:
-            gm = await _notify(GROUP_CHAT_ID, "group")
-            if not sent: sent = gm
+        if not sent:
+            logger.error(f"Order #{oid}: admin_chat={admin_chat_id} — no notification sent!")
 
         if sent:
             set_group_message_id(oid, sent.message_id)
