@@ -667,20 +667,34 @@ async def webapp_handler(msg: Message, state: FSMContext):
     # Find store + admin — route notification to correct admin
     store = None
     admin_chat_id = None
-    if store_id:
+
+    # Try by store_id (integer primary key)
+    if store_id is not None:
         try:
             store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
-            if store and store.get("admin_id"):
-                admin_chat_id = int(store["admin_id"])
         except Exception as e:
-            logger.warning(f"Store lookup failed: {e}")
+            logger.warning(f"Store id lookup failed store_id={store_id}: {e}")
+
+    # Fallback: find ANY store if store_id didn't work
+    if not store:
+        logger.warning(f"Store not found by id={store_id}, trying all stores")
+        all_stores = db_fetchall("SELECT * FROM stores LIMIT 1")
+        if all_stores:
+            store = all_stores[0]
+
+    if store and store.get("admin_id"):
+        admin_chat_id = int(store["admin_id"])
 
     target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else None)
 
     # Save order to DB
     oid = create_order(full_name, phone, address, lat, lon, items, total, uid, full_name,
                        store_id, target_chat or 0)
-    logger.info(f"New order #{oid}: uid={uid} store={store_id} target={target_chat}")
+    logger.info(
+        f"Order #{oid}: user={uid} store_id={store_id} "
+        f"store_found={store is not None} admin_chat={admin_chat_id} "
+        f"group={GROUP_CHAT_ID} items_len={len(items)}"
+    )
 
     # ── Format notification message ──
     store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
@@ -703,47 +717,44 @@ async def webapp_handler(msg: Message, state: FSMContext):
         f"💰 <b>Jami: {total:,} so'm</b>"
     )
 
-    # ── Send notification to admin ──
-    notified = False
-
-    # 1) Store admin's personal chat
-    if admin_chat_id:
+    # ── Send notification — to admin personal chat AND group (both) ──
+    async def _send_order_msg(chat_id: int, label: str):
+        """Send order notification to a single chat. Returns True on success."""
         try:
             sent = await msg.bot.send_message(
-                admin_chat_id, admin_txt,
+                chat_id, admin_txt,
                 parse_mode="HTML", reply_markup=admin_order_kb(oid)
             )
             if has_gps:
                 try:
-                    await msg.bot.send_location(admin_chat_id, lat, lon,
+                    await msg.bot.send_location(chat_id, lat, lon,
                                                 reply_to_message_id=sent.message_id)
                 except Exception: pass
-            set_group_message_id(oid, sent.message_id)
-            notified = True
-            logger.info(f"Order #{oid} notified admin {admin_chat_id}")
+            logger.info(f"Order #{oid} → {label} ({chat_id}) ✓")
+            return sent
         except Exception as e:
-            logger.error(f"Admin notify failed (chat {admin_chat_id}): {e}")
+            logger.error(f"Order #{oid} → {label} ({chat_id}) FAILED: {e}")
+            return None
 
-    # 2) Fallback — group chat
-    if not notified and GROUP_CHAT_ID:
-        try:
-            sent = await msg.bot.send_message(
-                GROUP_CHAT_ID, admin_txt,
-                parse_mode="HTML", reply_markup=admin_order_kb(oid)
-            )
-            if has_gps:
-                try:
-                    await msg.bot.send_location(GROUP_CHAT_ID, lat, lon,
-                                                reply_to_message_id=sent.message_id)
-                except Exception: pass
-            set_group_message_id(oid, sent.message_id)
-            notified = True
-            logger.info(f"Order #{oid} sent to group {GROUP_CHAT_ID}")
-        except Exception as e:
-            logger.error(f"Group notify failed: {e}")
+    sent_msg = None
 
-    if not notified:
-        logger.error(f"Order #{oid} could not be delivered to any chat!")
+    # 1) Always try admin's personal Telegram chat first
+    if admin_chat_id and admin_chat_id != uid:  # don't send to the buyer themselves
+        sent_msg = await _send_order_msg(admin_chat_id, "admin_personal")
+
+    # 2) Always also send to group chat (if configured and different from admin)
+    if GROUP_CHAT_ID and GROUP_CHAT_ID != admin_chat_id:
+        gm = await _send_order_msg(GROUP_CHAT_ID, "group")
+        if not sent_msg:
+            sent_msg = gm
+
+    if sent_msg:
+        set_group_message_id(oid, sent_msg.message_id)
+    else:
+        logger.error(
+            f"Order #{oid} NOT delivered! "
+            f"admin_chat={admin_chat_id} group={GROUP_CHAT_ID}"
+        )
 
     # ── Confirm to user ──
     await msg.answer(
@@ -1480,6 +1491,121 @@ async def handle_delete_product(request):
     if store and p_id:
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
+
+
+async def handle_place_order(request):
+    """HTTP order placement — used by mini-app instead of tg.sendData (more reliable)."""
+    try:
+        data = await request.json()
+        uid       = data.get("user_id") or 0
+        full_name = (data.get("full_name") or "Mehmon").strip()
+        phone     = (data.get("phone") or "").strip()
+        address   = (data.get("address") or "").strip()
+        lat       = data.get("lat")
+        lon       = data.get("lon")
+        items     = data.get("items", "")
+        total     = int(data.get("total") or 0)
+        store_id  = data.get("store_id")
+        promo     = data.get("promo_code", "")
+        discount  = int(data.get("discount") or 0)
+
+        if not items:
+            return web.json_response({"error": "Savat bo'sh"}, status=400)
+        if not phone:
+            return web.json_response({"error": "Telefon raqami yo'q"}, status=400)
+
+        has_gps = (lat is not None) and (lon is not None)
+        if not address and not has_gps:
+            return web.json_response({"error": "Manzil yoki GPS yo'q"}, status=400)
+        if not address and has_gps:
+            address = f"GPS: {lat:.5f}, {lon:.5f}"
+
+        # Save phone
+        if uid:
+            try: db_execute("UPDATE users SET phone=? WHERE user_id=?", (phone, int(uid)))
+            except Exception: pass
+
+        # Find store + admin
+        store = None
+        admin_chat_id = None
+        if store_id is not None:
+            try:
+                store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+            except Exception as e:
+                logger.warning(f"Store lookup failed store_id={store_id}: {e}")
+        if not store:
+            all_stores = db_fetchall("SELECT * FROM stores LIMIT 1")
+            if all_stores:
+                store = all_stores[0]
+        if store and store.get("admin_id"):
+            admin_chat_id = int(store["admin_id"])
+
+        target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else 0)
+
+        # Save to DB
+        oid = create_order(full_name, phone, address, lat, lon, items, total,
+                           uid or 0, full_name, store_id, target_chat)
+        logger.info(
+            f"[HTTP] Order #{oid}: user={uid} store={store_id} "
+            f"admin_chat={admin_chat_id} group={GROUP_CHAT_ID}"
+        )
+
+        # Format notification
+        store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
+        store_emoji = (store.get("emoji") or "🏪")     if store else "🏪"
+        loc_line, yandex_line = "", ""
+        if has_gps:
+            loc_line    = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+            yandex_line = (f"\n🚖 <a href='https://taxi.yandex.com/route?"
+                           f"end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go</a>")
+        promo_line = f"\n🎟️ {promo} (-{discount:,} so'm)" if promo else ""
+
+        admin_txt = (
+            f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
+            f"{store_emoji} {store_name}\n\n"
+            f"👤 <b>{full_name}</b>\n"
+            f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+            f"📍 {address}{loc_line}{yandex_line}{promo_line}\n\n"
+            f"🛒 {items}\n"
+            f"💰 <b>Jami: {total:,} so'm</b>"
+        )
+
+        kb = admin_order_kb(oid)
+
+        async def _notify(chat_id: int, label: str):
+            if not chat_id: return False
+            try:
+                sent = await bot.send_message(chat_id, admin_txt,
+                                              parse_mode="HTML", reply_markup=kb)
+                if has_gps:
+                    try: await bot.send_location(chat_id, lat, lon,
+                                                 reply_to_message_id=sent.message_id)
+                    except Exception: pass
+                logger.info(f"Order #{oid} → {label}({chat_id}) ✓")
+                return sent
+            except Exception as e:
+                logger.error(f"Order #{oid} → {label}({chat_id}) ✗ {e}")
+                return None
+
+        sent = None
+        # Send to admin personal chat
+        if admin_chat_id:
+            sent = await _notify(admin_chat_id, "admin")
+        # Also send to group chat
+        if GROUP_CHAT_ID and GROUP_CHAT_ID != admin_chat_id:
+            gm = await _notify(GROUP_CHAT_ID, "group")
+            if not sent: sent = gm
+
+        if sent:
+            set_group_message_id(oid, sent.message_id)
+        else:
+            logger.error(f"Order #{oid}: no notification sent!")
+
+        return web.json_response({"status": "ok", "order_id": oid})
+
+    except Exception as e:
+        logger.exception(f"handle_place_order: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def handle_user_region(request):
@@ -2427,6 +2553,7 @@ async def main():
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
     app.router.add_post('/api/user_region', handle_user_region)
+    app.router.add_post('/api/order', handle_place_order)          # HTTP order (reliable)
     # Promo codes
     app.router.add_post('/api/promo', handle_create_promo)
     app.router.add_get('/api/promos', handle_list_promos)

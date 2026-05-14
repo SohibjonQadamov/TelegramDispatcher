@@ -785,7 +785,8 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 <div id="succ-ov" class="gone">
   <div class="succ-c">✅</div>
   <div class="succ-t" id="succT">Buyurtma qabul qilindi!</div>
-  <div class="succ-s" id="succS">Botga qayting va ism hamda<br>manzilingizni kiriting.</div>
+  <div id="succOrderNum" style="font-size:18px;font-weight:800;color:var(--acc);margin-top:4px"></div>
+  <div class="succ-s" id="succS">Tez orada restoran tasdiqlaydi.<br>Bot orqali holat kuzating 📱</div>
   <div class="succ-dots"><div class="succ-dot"></div><div class="succ-dot"></div><div class="succ-dot"></div></div>
 </div>
 
@@ -1723,7 +1724,7 @@ function pickOrderLocation() {
   );
 }
 
-function submitOrder() {
+async function submitOrder() {
   const phone = (document.getElementById('orderPhone')?.value || '').trim();
   const addr  = (document.getElementById('orderAddress')?.value || '').trim();
   if (!phone) { showToast('⚠️ Telefon raqamini kiriting!'); document.getElementById('orderPhone')?.focus(); return; }
@@ -1761,12 +1762,40 @@ function submitOrder() {
   const btn = document.getElementById('submitOrderBtn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Yuborilmoqda...'; }
 
+  // Use HTTP API (more reliable than tg.sendData which has 512-byte limit)
+  const uid = tg.initDataUnsafe?.user?.id || parseInt(localStorage.getItem('user_id') || '0');
+  const full_name = tg.initDataUnsafe?.user?.first_name || 'Mehmon';
+  payload.user_id   = uid;
+  payload.full_name = full_name;
+
   try {
-    tg.sendData(JSON.stringify(payload));
-  } catch(e) {}
+    const r = await fetch('/api/order', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || 'HTTP ' + r.status);
+    hap.success();
+    cart=[]; activePromo=null;
+    closeOrderInfo();
+    updBadge(); closeCart(); updateStoreCB();
+    // Show success screen
+    const sov = document.getElementById('succ-ov');
+    if (sov) sov.classList.remove('gone');
+    const orderNum = document.getElementById('succOrderNum');
+    if (orderNum) orderNum.textContent = '#' + (d.order_id || '');
+    setTimeout(() => { try { tg.close(); } catch(e) {} }, 3500);
+    return;
+  } catch(e) {
+    console.error('submitOrder HTTP error:', e);
+    // Fallback to tg.sendData
+    try { tg.sendData(JSON.stringify(payload)); } catch(e2) {}
+    hap.success();
+    cart=[]; activePromo=null;
+    closeOrderInfo();
+  }
   hap.success();
-  cart=[]; activePromo=null;
-  closeOrderInfo();
   updBadge(); closeCart(); updateStoreCB();
   document.getElementById('succ-ov').classList.remove('gone');
   setTimeout(() => { try { tg.close(); } catch(e) {} }, 3500);
