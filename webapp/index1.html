@@ -1770,7 +1770,7 @@ function closeOrderInfo() {
 }
 
 function pickOrderLocation() {
-  const hint = document.getElementById('orderLocHint');
+  const hint    = document.getElementById('orderLocHint');
   const addrInp = document.getElementById('orderAddress');
   hint.textContent = '⏳ GPS aniqlanmoqda...';
   hint.style.color = 'var(--lbl2)';
@@ -1779,21 +1779,77 @@ function pickOrderLocation() {
     pos => {
       orderLat = pos.coords.latitude;
       orderLon = pos.coords.longitude;
-      // Auto-fill address field — user can still edit
       if (addrInp && !addrInp.value) {
         addrInp.value = `📍 GPS: ${orderLat.toFixed(5)}, ${orderLon.toFixed(5)}`;
       }
-      hint.textContent = '✅ GPS muvaffaqiyatli aniqlandi';
-      hint.style.color = '#2E7D32';
-      // Visual feedback on the address field
-      if (addrInp) {
-        addrInp.style.borderColor = '#2E7D32';
-        addrInp.readOnly = false; // user can still change
-      }
+      if (addrInp) addrInp.style.borderColor = '#2E7D32';
+      // Calculate delivery fee from server
+      calcAndShowDeliveryFee(orderLat, orderLon, hint);
     },
     err => { hint.textContent = '❌ GPS xato: ' + err.message; hint.style.color = '#C62828'; },
     { enableHighAccuracy: true, timeout: 10000 }
   );
+}
+
+async function calcAndShowDeliveryFee(lat, lon, hintEl) {
+  const store_id = cart[0]?.store_id ?? null;
+  if (!store_id) {
+    if (hintEl) { hintEl.textContent = '✅ GPS aniqlandi'; hintEl.style.color = '#2E7D32'; }
+    return;
+  }
+  try {
+    const r = await fetch(`/api/delivery_fee?store_id=${store_id}&lat=${lat}&lon=${lon}`);
+    const d = await r.json();
+    if (!d.available) {
+      if (hintEl) {
+        hintEl.textContent = `❌ ${d.reason}`;
+        hintEl.style.color = '#C62828';
+      }
+      showToast('❌ ' + d.reason);
+      orderLat = null; orderLon = null;
+      return;
+    }
+    // Store delivery fee for display
+    window._deliveryFeeInfo = d;
+    if (hintEl) {
+      hintEl.textContent = d.distance_km != null
+        ? `✅ Masofa: ${d.distance_km} km — Yetkazish: ${d.fee.toLocaleString()} so'm`
+        : `✅ GPS aniqlandi — Yetkazish: ${d.fee.toLocaleString()} so'm`;
+      hintEl.style.color = '#2E7D32';
+    }
+    // Update delivery fee display in cart footer
+    updateDeliveryFeeDisplay(d);
+  } catch(e) {
+    if (hintEl) { hintEl.textContent = '✅ GPS aniqlandi'; hintEl.style.color = '#2E7D32'; }
+  }
+}
+
+function updateDeliveryFeeDisplay(d) {
+  // Show delivery fee info below the order total
+  let el = document.getElementById('deliveryFeeRow');
+  if (!el) {
+    const priceRows = document.querySelector('.price-rows');
+    if (!priceRows) return;
+    el = document.createElement('div');
+    el.id = 'deliveryFeeRow';
+    el.className = 'price-row';
+    priceRows.insertBefore(el, priceRows.lastElementChild);
+  }
+  if (d && d.fee > 0) {
+    el.innerHTML = `<span class="pr-lbl" style="color:var(--lbl2)">🚗 Yetkazish${d.distance_km ? ' ('+d.distance_km+' km)' : ''}</span><span class="pr-val" style="color:var(--lbl2)">${d.fee.toLocaleString()} so'm*</span>`;
+    el.style.display = 'flex';
+    // Show footnote
+    let note = document.getElementById('deliveryFeeNote');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'deliveryFeeNote';
+      note.style.cssText = 'font-size:11px;color:var(--lbl3);padding:0 2px;margin-top:-6px';
+      document.querySelector('.price-rows').after(note);
+    }
+    note.textContent = '* Yetkazish haqi kuryerga alohida to\'lanadi';
+  } else if (el) {
+    el.style.display = 'none';
+  }
 }
 
 async function submitOrder() {

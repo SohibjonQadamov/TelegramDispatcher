@@ -64,6 +64,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("bot")
 
 
+# ── Haversine distance (km) ───────────────────────────────────────────────────
+import math
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Straight-line distance between two GPS points in kilometres."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def calc_delivery_fee(store: dict, user_lat: float, user_lon: float) -> dict:
+    """
+    Returns dict with:
+      distance_km, fee (so'm), available (bool), reason (str)
+    """
+    slat = store.get("lat")
+    slon = store.get("lon")
+    base      = int(store.get("base_delivery_fee") or store.get("delivery_fee") or 5000)
+    per_km    = int(store.get("price_per_km")      or 2000)
+    max_km    = float(store.get("radius")          or 10)
+
+    if not slat or not slon:
+        # Store has no GPS — use flat fee, no distance check
+        return {"distance_km": None, "fee": base, "available": True,
+                "reason": "Do'kon GPS yo'q — tekis narx"}
+
+    dist = haversine_km(float(slat), float(slon), user_lat, user_lon)
+    if dist > max_km:
+        return {"distance_km": round(dist, 1), "fee": 0, "available": False,
+                "reason": f"Yetkazish radiusidan tashqarida ({dist:.1f} km > {max_km} km)"}
+
+    # Round fee to nearest 500 so'm
+    raw_fee = base + dist * per_km
+    fee = int(round(raw_fee / 500) * 500)
+    return {"distance_km": round(dist, 1), "fee": fee, "available": True, "reason": "ok"}
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -116,7 +155,10 @@ _TABLES_SQL = [
         cover_url TEXT, description TEXT,
         phone TEXT, address TEXT,
         region TEXT, city TEXT, district TEXT,
-        lat REAL, lon REAL
+        lat REAL, lon REAL,
+        base_delivery_fee INTEGER DEFAULT 5000,
+        price_per_km INTEGER DEFAULT 2000,
+        delivery_group_id BIGINT
     )""",
     # products  ← SEPARATE from stores
     """CREATE TABLE IF NOT EXISTS products (
@@ -238,6 +280,9 @@ def _init_db_pg():
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS district TEXT",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lat REAL",
                 "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lon REAL",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS base_delivery_fee INTEGER DEFAULT 5000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS price_per_km INTEGER DEFAULT 2000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS delivery_group_id BIGINT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS district TEXT",
@@ -310,6 +355,9 @@ def _init_db_sqlite():
             "ALTER TABLE stores ADD COLUMN district TEXT",
             "ALTER TABLE stores ADD COLUMN lat REAL",
             "ALTER TABLE stores ADD COLUMN lon REAL",
+            "ALTER TABLE stores ADD COLUMN base_delivery_fee INTEGER DEFAULT 5000",
+            "ALTER TABLE stores ADD COLUMN price_per_km INTEGER DEFAULT 2000",
+            "ALTER TABLE stores ADD COLUMN delivery_group_id INTEGER",
             "ALTER TABLE users ADD COLUMN region TEXT",
             "ALTER TABLE users ADD COLUMN city TEXT",
             "ALTER TABLE users ADD COLUMN district TEXT",
@@ -1509,19 +1557,24 @@ async def handle_update_store(request):
         except: lat = None
         try: lon = float(lon) if lon is not None else None
         except: lon = None
-        bg            = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
+        base_delivery_fee = int(data.get('base_delivery_fee') or 5000)
+        price_per_km      = int(data.get('price_per_km')      or 2000)
+        delivery_group_id = data.get('delivery_group_id')
+        try: delivery_group_id = int(delivery_group_id) if delivery_group_id else None
+        except: delivery_group_id = None
+        bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
 
         store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
         if store:
             db_execute(
-                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=? WHERE admin_id=?",
-                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, admin_id)
+                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=?, base_delivery_fee=?, price_per_km=?, delivery_group_id=? WHERE admin_id=?",
+                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, admin_id)
             )
             logger.info(f"Store updated: admin_id={admin_id} name={name}")
         else:
             db_execute(
-                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon)
+                "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id)
             )
             logger.info(f"Store created: admin_id={admin_id} name={name}")
 
@@ -1695,6 +1748,35 @@ async def handle_place_order(request):
 
     except Exception as e:
         logger.exception(f"handle_place_order: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_delivery_fee(request):
+    """Calculate delivery fee based on user GPS and store location."""
+    try:
+        store_id = request.query.get("store_id")
+        ulat     = request.query.get("lat")
+        ulon     = request.query.get("lon")
+
+        if not store_id or not ulat or not ulon:
+            return web.json_response({"error": "store_id, lat, lon required"}, status=400)
+
+        store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=404)
+
+        result = calc_delivery_fee(store, float(ulat), float(ulon))
+        return web.json_response({
+            "fee":          result["fee"],
+            "distance_km":  result["distance_km"],
+            "available":    result["available"],
+            "reason":       result["reason"],
+            "base_fee":     store.get("base_delivery_fee") or 5000,
+            "price_per_km": store.get("price_per_km") or 2000,
+            "max_km":       store.get("radius") or 10,
+        })
+    except Exception as e:
+        logger.exception(f"delivery_fee: {e}")
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -2641,6 +2723,7 @@ async def main():
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
     app.router.add_post('/api/user_region', handle_user_region)
+    app.router.add_get('/api/delivery_fee', handle_delivery_fee)
     app.router.add_post('/api/order', handle_place_order)          # HTTP order (reliable)
     # Promo codes
     app.router.add_post('/api/promo', handle_create_promo)
