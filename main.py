@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import aiohttp
 from aiohttp import web
 from aiogram.types import WebAppInfo
 from aiogram import Bot, Dispatcher, F, Router
@@ -24,6 +27,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    Update,
 )
 from dotenv import load_dotenv
 
@@ -32,16 +36,72 @@ load_dotenv()
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 GROUP_CHAT_ID = int((os.getenv("GROUP_CHAT_ID") or "0").strip() or 0)
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "").split(",") if x.strip()]
+PAYME_KEY = os.getenv("PAYME_KEY", "")
+CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID", "")
+PLATFORM_COMMISSION_PCT = float(os.getenv("PLATFORM_COMMISSION_PCT", "2.0"))  # % admindan
+CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY", "")
+YANDEX_DELIVERY_TOKEN = os.getenv("YANDEX_DELIVERY_TOKEN", "")
+YANDEX_DELIVERY_URL = "https://b2b.taxi.yandex.net/b2b/cargo/integration/v2"
 
 if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise RuntimeError(".env ni to'ldiring")
 
 DB_PATH = Path("orders.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()   # Neon/Render PostgreSQL URL
+USE_PG = bool(DATABASE_URL)
+
+# ── Global bot / dispatcher — set in main(), used by HTTP handlers ──────────
+bot: "Bot | None" = None
+dp:  "Dispatcher | None" = None
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
-WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://d0fc-213-230-80-60.ngrok-free.app" # placeholder, user must update .env
+# Auto-detect URL: WEBAPP_URL env → RENDER_EXTERNAL_URL (set automatically by Render) → fallback
+WEBAPP_URL = (
+    os.getenv("WEBAPP_URL") or
+    os.getenv("RENDER_EXTERNAL_URL") or
+    "http://localhost:8080"
+).rstrip("/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bot")
+
+
+# ── Haversine distance (km) ───────────────────────────────────────────────────
+import math
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Straight-line distance between two GPS points in kilometres."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def calc_delivery_fee(store: dict, user_lat: float, user_lon: float) -> dict:
+    """
+    Returns dict with:
+      distance_km, fee (so'm), available (bool), reason (str)
+    """
+    slat = store.get("lat")
+    slon = store.get("lon")
+    base      = int(store.get("base_delivery_fee") or store.get("delivery_fee") or 5000)
+    per_km    = int(store.get("price_per_km")      or 2000)
+    max_km    = float(store.get("radius")          or 10)
+
+    if not slat or not slon:
+        # Store has no GPS — use flat fee, no distance check
+        return {"distance_km": None, "fee": base, "available": True,
+                "reason": "Do'kon GPS yo'q — tekis narx"}
+
+    dist = haversine_km(float(slat), float(slon), user_lat, user_lon)
+    if dist > max_km:
+        return {"distance_km": round(dist, 1), "fee": 0, "available": False,
+                "reason": f"Yetkazish radiusidan tashqarida ({dist:.1f} km > {max_km} km)"}
+
+    # Round fee to nearest 500 so'm
+    raw_fee = base + dist * per_km
+    fee = int(round(raw_fee / 500) * 500)
+    return {"distance_km": round(dist, 1), "fee": fee, "available": True, "reason": "ok"}
 
 
 def now_iso() -> str:
@@ -53,81 +113,372 @@ def is_admin(user_id: int) -> bool:
 
 
 # ================= DB =================
+# Schema — shared DDL logic; caller passes execute/executemany functions
+_TABLES_SQL = [
+    # orders
+    """CREATE TABLE IF NOT EXISTS orders (
+        id {id_def},
+        created_at TEXT, status TEXT DEFAULT 'NEW',
+        full_name TEXT, phone TEXT, address TEXT,
+        lat REAL, lon REAL,
+        items TEXT, total INTEGER,
+        created_by_id BIGINT, created_by_name TEXT,
+        accepted_by_id BIGINT, accepted_by_name TEXT,
+        accepted_at TEXT, closed_at TEXT,
+        group_message_id INTEGER,
+        store_id INTEGER, target_chat_id BIGINT,
+        yandex_claim_id TEXT, yandex_status TEXT,
+        yandex_tracking_url TEXT, delivery_type TEXT DEFAULT 'own',
+        delivery_fee INTEGER DEFAULT 0,
+        delivery_courier_id BIGINT, delivery_courier_name TEXT
+    )""",
+    # users
+    """CREATE TABLE IF NOT EXISTS users (
+        user_id BIGINT PRIMARY KEY,
+        role TEXT DEFAULT 'user',
+        registered_at TEXT,
+        first_name TEXT, last_name TEXT,
+        username TEXT, language_code TEXT,
+        photo_url TEXT, onboarded INTEGER DEFAULT 0,
+        region TEXT, city TEXT, district TEXT
+    )""",
+    # stores  ← CENTRAL TABLE: stores/products/orders separated
+    """CREATE TABLE IF NOT EXISTS stores (
+        id {id_def},
+        admin_id BIGINT,
+        name TEXT, type TEXT, emoji TEXT, bg_color TEXT,
+        delivery_fee INTEGER DEFAULT 15000,
+        eta INTEGER DEFAULT 25,
+        radius REAL DEFAULT 5,
+        min_order INTEGER DEFAULT 50000,
+        hours_weekday TEXT DEFAULT '09:00-22:00',
+        hours_weekend TEXT DEFAULT '10:00-23:00',
+        is_open INTEGER DEFAULT 1,
+        accent_color TEXT DEFAULT '#FF6B35',
+        cover_url TEXT, description TEXT,
+        phone TEXT, address TEXT,
+        region TEXT, city TEXT, district TEXT,
+        lat REAL, lon REAL,
+        base_delivery_fee INTEGER DEFAULT 5000,
+        price_per_km INTEGER DEFAULT 2000,
+        delivery_group_id BIGINT
+    )""",
+    # products  ← SEPARATE from stores
+    """CREATE TABLE IF NOT EXISTS products (
+        id {id_def},
+        store_id INTEGER,
+        name TEXT, price INTEGER,
+        prod_desc TEXT, emoji TEXT, cat TEXT,
+        old_price INTEGER, discount_qty INTEGER, discount_end TEXT
+    )""",
+    # ratings
+    """CREATE TABLE IF NOT EXISTS ratings (
+        id {id_def},
+        order_id INTEGER UNIQUE,
+        user_id BIGINT, store_id INTEGER,
+        stars INTEGER, comment TEXT, created_at TEXT
+    )""",
+    # subscriptions
+    """CREATE TABLE IF NOT EXISTS subscriptions (
+        id {id_def},
+        store_id INTEGER UNIQUE,
+        admin_id BIGINT,
+        plan TEXT DEFAULT 'free',
+        orders_this_month INTEGER DEFAULT 0,
+        billing_month TEXT, next_billing TEXT, created_at TEXT
+    )""",
+    # transactions
+    """CREATE TABLE IF NOT EXISTS transactions (
+        id {id_def},
+        provider TEXT, provider_tx_id TEXT UNIQUE,
+        order_id INTEGER, amount INTEGER,
+        state INTEGER DEFAULT 1,
+        created_at TEXT, performed_at TEXT,
+        cancelled_at TEXT, reason INTEGER
+    )""",
+    # promo_codes  ← Marketing tool
+    """CREATE TABLE IF NOT EXISTS promo_codes (
+        id {id_def},
+        code TEXT UNIQUE,
+        store_id INTEGER,
+        discount_pct INTEGER DEFAULT 0,
+        discount_amount INTEGER DEFAULT 0,
+        min_order INTEGER DEFAULT 0,
+        max_uses INTEGER DEFAULT 0,
+        used_count INTEGER DEFAULT 0,
+        expires_at TEXT,
+        active INTEGER DEFAULT 1,
+        created_at TEXT,
+        created_by BIGINT
+    )""",
+    # promo_uses — track per-user usage
+    """CREATE TABLE IF NOT EXISTS promo_uses (
+        id {id_def},
+        promo_id INTEGER,
+        user_id BIGINT,
+        order_id INTEGER,
+        used_at TEXT
+    )""",
+    # referrals — user acquisition
+    """CREATE TABLE IF NOT EXISTS referrals (
+        id {id_def},
+        referrer_id BIGINT,
+        referred_id BIGINT UNIQUE,
+        bonus_amount INTEGER DEFAULT 10000,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        rewarded_at TEXT
+    )""",
+]
+
+
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT, status TEXT DEFAULT 'NEW',
-            full_name TEXT, phone TEXT, address TEXT,
-            lat REAL, lon REAL,
-            items TEXT, total INTEGER,
-            created_by_id INTEGER, created_by_name TEXT,
-            accepted_by_id INTEGER, accepted_by_name TEXT,
-            accepted_at TEXT, closed_at TEXT,
-            group_message_id INTEGER
-        )""")
-        try:
-            conn.execute("ALTER TABLE orders ADD COLUMN store_id INTEGER")
-        except sqlite3.OperationalError:
-            pass
+    if USE_PG:
+        _init_db_pg()
+    else:
+        _init_db_sqlite()
 
-        conn.execute("""CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            role TEXT DEFAULT 'user',
-            registered_at TEXT
-        )""")
 
-        conn.execute("""CREATE TABLE IF NOT EXISTS stores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER UNIQUE,
-            name TEXT, type TEXT, emoji TEXT, bg_color TEXT
-        )""")
-
-        conn.execute("""CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_id INTEGER,
-            name TEXT, price INTEGER, desc TEXT, emoji TEXT, cat TEXT,
-            old_price INTEGER, discount_qty INTEGER, discount_end TEXT
-        )""")
-        
-        # Add new columns to existing products table if they don't exist
-        try:
-            conn.execute("ALTER TABLE products ADD COLUMN old_price INTEGER")
-            conn.execute("ALTER TABLE products ADD COLUMN discount_qty INTEGER")
-            conn.execute("ALTER TABLE products ADD COLUMN discount_end TEXT")
-        except sqlite3.OperationalError:
-            pass
-            
+def _init_db_pg():
+    import psycopg2, psycopg2.extras
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            for tpl in _TABLES_SQL:
+                cur.execute(tpl.format(id_def="BIGSERIAL PRIMARY KEY"))
+            # Safe column migrations for PG (IF NOT EXISTS supported PG 9.6+)
+            safe_cols = [
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id INTEGER",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS target_chat_id BIGINT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_claim_id TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_status TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS yandex_tracking_url TEXT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_type TEXT DEFAULT 'own'",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS group_message_id INTEGER",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 0",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_courier_id BIGINT",
+                "ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_courier_name TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS language_code TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded INTEGER DEFAULT 0",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS admin_id BIGINT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS name TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS type TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS emoji TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS bg_color TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 15000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS eta INTEGER DEFAULT 25",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS radius REAL DEFAULT 5",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS min_order INTEGER DEFAULT 50000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS hours_weekday TEXT DEFAULT '09:00-22:00'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS hours_weekend TEXT DEFAULT '10:00-23:00'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_open INTEGER DEFAULT 1",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS accent_color TEXT DEFAULT '#FF6B35'",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS cover_url TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS description TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS address TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS region TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS district TEXT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lat REAL",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS lon REAL",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS base_delivery_fee INTEGER DEFAULT 5000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS price_per_km INTEGER DEFAULT 2000",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS delivery_group_id BIGINT",
+                "ALTER TABLE stores ADD COLUMN IF NOT EXISTS branch_label TEXT",
+                "ALTER TABLE stores DROP CONSTRAINT IF EXISTS stores_admin_id_key",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS region TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS district TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_balance INTEGER DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured INTEGER DEFAULT 0",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_available INTEGER DEFAULT 1",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_count INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS prod_desc TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS emoji TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS cat TEXT",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_qty INTEGER",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS discount_end TEXT",
+            ]
+            for col in safe_cols:
+                try: cur.execute(col)
+                except Exception: pass
         conn.commit()
+        logger.info("PostgreSQL schema ready ✓")
+    finally:
+        conn.close()
 
 
-def db_fetchone(sql, params=()):
+def _init_db_sqlite():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(sql, params).fetchone()
-        return dict(row) if row else None
+        for tpl in _TABLES_SQL:
+            conn.execute(tpl.format(id_def="INTEGER PRIMARY KEY AUTOINCREMENT"))
+        # COMPREHENSIVE migrations — every possible column for every table.
+        # try/except silently skips columns that already exist.
+        safe_cols = [
+            # orders
+            "ALTER TABLE orders ADD COLUMN store_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN target_chat_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN yandex_claim_id TEXT",
+            "ALTER TABLE orders ADD COLUMN yandex_status TEXT",
+            "ALTER TABLE orders ADD COLUMN yandex_tracking_url TEXT",
+            "ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'own'",
+            "ALTER TABLE orders ADD COLUMN group_message_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN delivery_fee INTEGER DEFAULT 0",
+            "ALTER TABLE orders ADD COLUMN delivery_courier_id INTEGER",
+            "ALTER TABLE orders ADD COLUMN delivery_courier_name TEXT",
+            # users
+            "ALTER TABLE users ADD COLUMN first_name TEXT",
+            "ALTER TABLE users ADD COLUMN last_name TEXT",
+            "ALTER TABLE users ADD COLUMN username TEXT",
+            "ALTER TABLE users ADD COLUMN language_code TEXT",
+            "ALTER TABLE users ADD COLUMN photo_url TEXT",
+            "ALTER TABLE users ADD COLUMN onboarded INTEGER DEFAULT 0",
+            # stores — all columns
+            "ALTER TABLE stores ADD COLUMN admin_id INTEGER",
+            "ALTER TABLE stores ADD COLUMN name TEXT",
+            "ALTER TABLE stores ADD COLUMN type TEXT",
+            "ALTER TABLE stores ADD COLUMN emoji TEXT",
+            "ALTER TABLE stores ADD COLUMN bg_color TEXT",
+            "ALTER TABLE stores ADD COLUMN delivery_fee INTEGER DEFAULT 15000",
+            "ALTER TABLE stores ADD COLUMN eta INTEGER DEFAULT 25",
+            "ALTER TABLE stores ADD COLUMN radius REAL DEFAULT 5",
+            "ALTER TABLE stores ADD COLUMN min_order INTEGER DEFAULT 50000",
+            "ALTER TABLE stores ADD COLUMN hours_weekday TEXT DEFAULT '09:00-22:00'",
+            "ALTER TABLE stores ADD COLUMN hours_weekend TEXT DEFAULT '10:00-23:00'",
+            "ALTER TABLE stores ADD COLUMN is_open INTEGER DEFAULT 1",
+            "ALTER TABLE stores ADD COLUMN accent_color TEXT DEFAULT '#FF6B35'",
+            "ALTER TABLE stores ADD COLUMN cover_url TEXT",
+            "ALTER TABLE stores ADD COLUMN description TEXT",
+            "ALTER TABLE stores ADD COLUMN phone TEXT",
+            "ALTER TABLE stores ADD COLUMN address TEXT",
+            "ALTER TABLE stores ADD COLUMN region TEXT",
+            "ALTER TABLE stores ADD COLUMN city TEXT",
+            "ALTER TABLE stores ADD COLUMN district TEXT",
+            "ALTER TABLE stores ADD COLUMN lat REAL",
+            "ALTER TABLE stores ADD COLUMN lon REAL",
+            "ALTER TABLE stores ADD COLUMN base_delivery_fee INTEGER DEFAULT 5000",
+            "ALTER TABLE stores ADD COLUMN price_per_km INTEGER DEFAULT 2000",
+            "ALTER TABLE stores ADD COLUMN delivery_group_id INTEGER",
+            "ALTER TABLE stores ADD COLUMN branch_label TEXT",
+            "ALTER TABLE users ADD COLUMN region TEXT",
+            "ALTER TABLE users ADD COLUMN city TEXT",
+            "ALTER TABLE users ADD COLUMN district TEXT",
+            "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+            "ALTER TABLE users ADD COLUMN bonus_balance INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN phone TEXT",
+            "ALTER TABLE products ADD COLUMN photo_url TEXT",
+            "ALTER TABLE products ADD COLUMN is_featured INTEGER DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN is_available INTEGER DEFAULT 1",
+            "ALTER TABLE products ADD COLUMN stock_count INTEGER",
+            # products — ALL columns
+            "ALTER TABLE products ADD COLUMN store_id INTEGER",
+            "ALTER TABLE products ADD COLUMN name TEXT",
+            "ALTER TABLE products ADD COLUMN price INTEGER",
+            "ALTER TABLE products ADD COLUMN prod_desc TEXT",
+            "ALTER TABLE products ADD COLUMN emoji TEXT",
+            "ALTER TABLE products ADD COLUMN cat TEXT",
+            "ALTER TABLE products ADD COLUMN old_price INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_qty INTEGER",
+            "ALTER TABLE products ADD COLUMN discount_end TEXT",
+        ]
+        for col in safe_cols:
+            try: conn.execute(col)
+            except sqlite3.OperationalError: pass
+        conn.commit()
+        logger.info("SQLite schema ready ✓")
+
+
+# ── PostgreSQL helpers ──────────────────────────────────────────────────────
+def _pg_conn():
+    import psycopg2, psycopg2.extras
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+def _pg(sql: str) -> str:
+    """Convert SQLite ? placeholders to PostgreSQL %s"""
+    return sql.replace("?", "%s")
+
+# ── Unified DB API ───────────────────────────────────────────────────────────
+def db_fetchone(sql, params=()):
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
 
 
 def db_fetchall(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def db_execute(sql, params=()):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(sql, params)
-        conn.commit()
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_pg(sql), params)
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(sql, params)
+            conn.commit()
 
 
-def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id)
-        )
-        conn.commit()
-        return int(cur.lastrowid)
+def create_order(full_name, phone, address, lat, lon, items, total, uid, uname, store_id=None, target_chat_id=None, delivery_fee=0):
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id, delivery_fee) VALUES (%s, 'NEW', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                    (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id, delivery_fee)
+                )
+                oid = cur.fetchone()["id"]
+            conn.commit()
+            return int(oid)
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "INSERT INTO orders (created_at, status, full_name, phone, address, lat, lon, items, total, created_by_id, created_by_name, store_id, target_chat_id, delivery_fee) VALUES (?, 'NEW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now_iso(), full_name, phone, address, lat, lon, items, total, uid, uname, store_id, target_chat_id, delivery_fee)
+            )
+            conn.commit()
+            return int(cur.lastrowid)
 
 
 def get_order(oid):
@@ -139,13 +490,27 @@ def set_group_message_id(oid, mid):
 
 
 def try_accept_order(oid, cid, cname):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=? AND status='NEW'",
-            (cid, cname, now_iso(), oid)
-        )
-        conn.commit()
-        return cur.rowcount == 1
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=%s, accepted_by_name=%s, accepted_at=%s WHERE id=%s AND status='NEW'",
+                    (cid, cname, now_iso(), oid)
+                )
+                rows = cur.rowcount
+            conn.commit()
+            return rows == 1
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=? AND status='NEW'",
+                (cid, cname, now_iso(), oid)
+            )
+            conn.commit()
+            return cur.rowcount == 1
 
 
 def close_order(oid, status):
@@ -191,21 +556,12 @@ class ProductState(StatesGroup):
 # ================= UI =================
 def main_kb(uid=None):
     rows = [
-        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index.html"))]
+        [KeyboardButton(text="📱 Menyu", web_app=WebAppInfo(url=WEBAPP_URL + "/index1.html"))]
     ]
 
-    # Admin tugmalari
-    if uid and is_admin(uid):
+    # Admin panel — store owner ko'radi
+    if uid and (is_admin(uid) or db_fetchone("SELECT id FROM stores WHERE admin_id=?", (uid,))):
         rows.append([KeyboardButton(text="⚙️ Boshqaruv", web_app=WebAppInfo(url=WEBAPP_URL + "/admin.html"))])
-    else:
-        # Oddiy foydalanuvchilar uchun kuryerlik
-        if uid:
-            role = get_user_role(uid)
-            if role == 'courier':
-                rows.append([KeyboardButton(text="🚗 Kuryer panel")])
-                rows.append([KeyboardButton(text="🔴 Kuryerlikdan chiqish")])
-            else:
-                rows.append([KeyboardButton(text="🚗 Kuryer bo'lish")])
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -296,19 +652,206 @@ async def leave_courier(msg: Message):
 
 # ================= ORDER FLOW =================
 # ================= WEB APP =================
+def admin_order_kb(oid: int) -> InlineKeyboardMarkup:
+    """NEW order — admin can accept or cancel."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"adm_accept:{oid}"),
+            InlineKeyboardButton(text="❌ Bekor",         callback_data=f"adm_cancel:{oid}"),
+        ],
+    ])
+
+def admin_order_kb_ready(oid: int) -> InlineKeyboardMarkup:
+    """IN_PROGRESS — admin marks ready → triggers Yandex automatically."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🟡 Tayyor bo'ldi → Yandex chaqir", callback_data=f"adm_ready:{oid}"),
+        ],
+        [
+            InlineKeyboardButton(text="❌ Bekor", callback_data=f"adm_cancel:{oid}"),
+        ],
+    ])
+
+def admin_order_kb_delivering(oid: int) -> InlineKeyboardMarkup:
+    """IN_DELIVERY — waiting for user confirmation."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎉 Yetkazildi (qo'lda)", callback_data=f"adm_done:{oid}"),
+        ],
+    ])
+
+def user_received_kb(oid: int) -> InlineKeyboardMarkup:
+    """User presses this when they receive the order."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Qabul qildim!", callback_data=f"user_received:{oid}")]
+    ])
+
+
+def courier_group_kb(oid: int, fee: int) -> InlineKeyboardMarkup:
+    """Courier group — first to press gets the delivery."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✅ Men olaman! ({fee:,} so'm)",
+            callback_data=f"courier_take:{oid}"
+        )]
+    ])
+
+
 @router.message(F.web_app_data)
 async def webapp_handler(msg: Message, state: FSMContext):
     if not msg.from_user: return
-    data = json.loads(msg.web_app_data.data)
-    items = data.get("items", "")
-    total = data.get("total", 0)
-    store_id = data.get("store_id")
+    try:
+        data = json.loads(msg.web_app_data.data)
+    except Exception:
+        return
 
-    await state.update_data(webapp_items=items, webapp_total=total, store_id=store_id)
-    await state.set_state(OrderState.waiting_name)
+    action = data.get("action")
+
+    # ── Onboarding ──
+    if action == "registered":
+        uid = msg.from_user.id
+        db_execute(
+            """INSERT INTO users (user_id, role, registered_at, first_name, onboarded)
+               VALUES (?, 'user', ?, ?, 1)
+               ON CONFLICT(user_id) DO UPDATE SET onboarded=1""",
+            (uid, now_iso(), msg.from_user.first_name or '')
+        )
+        name = msg.from_user.first_name or "do'st"
+        await msg.answer(
+            f"✅ <b>Xush kelibsiz, {name}!</b>\n\nEndi buyurtma berishingiz mumkin! 🍔",
+            reply_markup=main_kb(uid), parse_mode="HTML"
+        )
+        return
+
+    # ── Buyurtma: to'liq ma'lumot mini-app'dan keladi ──
+    if action != "order":
+        return
+
+    uid       = msg.from_user.id
+    full_name = msg.from_user.full_name or msg.from_user.first_name or "Mehmon"
+    phone     = (data.get("phone") or "").strip()
+    address   = (data.get("address") or "").strip()
+    lat       = data.get("lat")
+    lon       = data.get("lon")
+    items     = data.get("items", "")
+    total     = int(data.get("total") or 0)
+    store_id  = data.get("store_id")
+    promo     = data.get("promo_code", "")
+    discount  = int(data.get("discount") or 0)
+
+    # Validate — phone required; address OR GPS required
+    if not items:
+        await msg.answer("❌ Savat bo'sh. Qaytadan urinib ko'ring."); return
+    if not phone:
+        await msg.answer("❌ Telefon raqamini kiriting."); return
+    has_gps = (lat is not None) and (lon is not None)
+    if not address and not has_gps:
+        await msg.answer("❌ Manzil yoki GPS lokatsiyasini kiriting."); return
+
+    # Use GPS string as address if address is empty
+    if not address and has_gps:
+        address = f"GPS: {lat:.5f}, {lon:.5f}"
+
+    # Save phone to user profile
+    try:
+        db_execute("UPDATE users SET phone=? WHERE user_id=?", (phone, uid))
+    except Exception: pass
+
+    # Find store + admin — route notification to correct admin
+    store = None
+    admin_chat_id = None
+
+    # Try by store_id (integer primary key)
+    if store_id is not None:
+        try:
+            store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+        except Exception as e:
+            logger.warning(f"Store id lookup failed store_id={store_id}: {e}")
+
+    # Fallback: find ANY store if store_id didn't work
+    if not store:
+        logger.warning(f"Store not found by id={store_id}, trying all stores")
+        all_stores = db_fetchall("SELECT * FROM stores LIMIT 1")
+        if all_stores:
+            store = all_stores[0]
+
+    if store and store.get("admin_id"):
+        admin_chat_id = int(store["admin_id"])
+
+    target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else None)
+
+    # Save order to DB
+    oid = create_order(full_name, phone, address, lat, lon, items, total, uid, full_name,
+                       store_id, target_chat or 0)
+    logger.info(
+        f"Order #{oid}: user={uid} store_id={store_id} "
+        f"store_found={store is not None} admin_chat={admin_chat_id} "
+        f"group={GROUP_CHAT_ID} items_len={len(items)}"
+    )
+
+    # ── Format notification message ──
+    store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
+    store_emoji = (store.get("emoji") or "🏪")     if store else "🏪"
+    loc_line    = ""
+    yandex_line = ""
+    if has_gps:
+        loc_line    = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+        yandex_line = (f"\n🚖 <a href='https://taxi.yandex.com/route?"
+                       f"end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go chaqirish</a>")
+    promo_line  = f"\n🎟️ Promo: {promo} (-{discount:,} so'm)" if promo else ""
+
+    admin_txt = (
+        f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
+        f"{store_emoji} {store_name}\n\n"
+        f"👤 <b>{full_name}</b>\n"
+        f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+        f"📍 {address}{loc_line}{yandex_line}{promo_line}\n\n"
+        f"🛒 {items}\n"
+        f"💰 <b>Jami: {total:,} so'm</b>"
+    )
+
+    # ── Send notification — only to store admin (no group) ──
+    async def _send_order_msg(chat_id: int, label: str):
+        """Send order notification to a single chat. Returns True on success."""
+        try:
+            sent = await msg.bot.send_message(
+                chat_id, admin_txt,
+                parse_mode="HTML", reply_markup=admin_order_kb(oid)
+            )
+            if has_gps:
+                try:
+                    await msg.bot.send_location(chat_id, lat, lon,
+                                                reply_to_message_id=sent.message_id)
+                except Exception: pass
+            logger.info(f"Order #{oid} → {label} ({chat_id}) ✓")
+            return sent
+        except Exception as e:
+            logger.error(f"Order #{oid} → {label} ({chat_id}) FAILED: {e}")
+            return None
+
+    sent_msg = None
+
+    # 1) Always try admin's personal Telegram chat first
+    if admin_chat_id and admin_chat_id != uid:  # don't send to the buyer themselves
+        sent_msg = await _send_order_msg(admin_chat_id, "admin_personal")
+
+    # Group chat: NOT used anymore — orders go only to store admin
+
+    if sent_msg:
+        set_group_message_id(oid, sent_msg.message_id)
+    else:
+        logger.error(
+            f"Order #{oid} NOT delivered! "
+            f"admin_chat={admin_chat_id} group={GROUP_CHAT_ID}"
+        )
+
+    # ── Confirm to user ──
     await msg.answer(
-        f"📱 {items}\n💰 Jami: {total:,} so'm\n\n👤 Ismingizni yuboring:",
-        reply_markup=ReplyKeyboardRemove()
+        f"✅ <b>Buyurtma #{oid} qabul qilindi!</b>\n\n"
+        f"🛒 {items}\n"
+        f"💰 Jami: {total:,} so'm\n\n"
+        f"Do'kon tasdiqlashi bilanoq xabar beramiz 📱",
+        reply_markup=main_kb(uid), parse_mode="HTML"
     )
 
 
@@ -316,7 +859,61 @@ async def webapp_handler(msg: Message, state: FSMContext):
 @router.message(CommandStart())
 async def start(msg: Message, state: FSMContext):
     await state.clear()
-    await msg.answer("🍔 Fast Food", reply_markup=main_kb(msg.from_user.id if msg.from_user else None))
+    if not msg.from_user:
+        await msg.answer("🍔 Fast Food", reply_markup=main_kb())
+        return
+
+    uid = msg.from_user.id
+    user = db_fetchone("SELECT * FROM users WHERE user_id=?", (uid,))
+
+    # Check for referral code in /start payload: /start ref<user_id>
+    referrer_id = None
+    try:
+        parts = (msg.text or '').split(maxsplit=1)
+        if len(parts) > 1 and parts[1].startswith('ref'):
+            ref_uid = int(parts[1][3:])
+            if ref_uid and ref_uid != uid:
+                referrer_id = ref_uid
+    except (ValueError, IndexError):
+        pass
+
+    # Record referral if new user
+    if referrer_id and (not user or not user.get('onboarded')):
+        try:
+            existing_ref = db_fetchone("SELECT id FROM referrals WHERE referred_id=?", (uid,))
+            if not existing_ref:
+                db_execute(
+                    "INSERT INTO referrals (referrer_id, referred_id, bonus_amount, status, created_at) VALUES (?, ?, 10000, 'pending', ?)",
+                    (referrer_id, uid, now_iso())
+                )
+                logger.info(f"Referral recorded: {referrer_id} → {uid}")
+        except Exception as e:
+            logger.warning(f"Referral insert failed: {e}")
+
+    if not user or not user.get('onboarded'):
+        # Yangi foydalanuvchi — onboarding yuborish
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🚀 Boshlash",
+                web_app=WebAppInfo(url=WEBAPP_URL + "/onboarding.html")
+            )
+        ]])
+        name = msg.from_user.first_name or "do'st"
+        await msg.answer(
+            f"👋 Salom, <b>{name}</b>!\n\n"
+            f"🍔 <b>FoodBot</b> ga xush kelibsiz!\n\n"
+            f"Telegram orqali ovqat buyurtma qiling, restoran oching, yetkazib berish — barchasi bir joyda.\n\n"
+            f"⬇️ Boshlash uchun tugmani bosing:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    else:
+        # Qaytib kelgan foydalanuvchi
+        await msg.answer(
+            f"👋 Xush kelibsiz, <b>{msg.from_user.first_name}</b>!",
+            reply_markup=main_kb(uid),
+            parse_mode="HTML"
+        )
 
 
 @router.message(F.text == "❌ Bekor qilish")
@@ -428,15 +1025,16 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Ism va manzil to'ldirilishi shart", show_alert=True); return
 
     try:
-        oid = create_order(fn, ph, ad, lat, lon, items, total, cb.from_user.id, cb.from_user.full_name, store_id)
-        order = get_order(oid)
-        txt = fmt_order(order)
-        
+        # Qaysi chatga yuborish kerakligini aniqlaymiz
         target_chat = GROUP_CHAT_ID
         if store_id:
             store = db_fetchone("SELECT admin_id FROM stores WHERE id=?", (store_id,))
             if store and store['admin_id']:
                 target_chat = store['admin_id']
+
+        oid = create_order(fn, ph, ad, lat, lon, items, total, cb.from_user.id, cb.from_user.full_name, store_id, target_chat)
+        order = get_order(oid)
+        txt = fmt_order(order)
 
         if lat and lon:
             loc_msg = await cb.bot.send_location(target_chat, lat, lon)
@@ -454,6 +1052,406 @@ async def confirm_order(cb: CallbackQuery, state: FSMContext):
         logger.exception("Xato")
         if cb.message: await cb.message.answer(f"❌ Xato: {e}")
         await state.clear()
+
+
+# ─── ADMIN ORDER CALLBACKS ────────────────────────────────────────────────────
+async def _call_yandex(order: dict) -> tuple[bool, str]:
+    """Call Yandex Delivery API. Returns (success, claim_id_or_error)."""
+    oid = order['id']
+    store_id = order.get("store_id")
+    pickup_lat = pickup_lon = None
+    store_address = "Do'kon"
+    store_phone = "+998900000000"
+    if store_id:
+        s = db_fetchone("SELECT lat,lon,address,name,phone FROM stores WHERE id=?", (store_id,))
+        if s:
+            pickup_lat    = s.get("lat")
+            pickup_lon    = s.get("lon")
+            store_address = s.get("address") or s.get("name") or "Do'kon"
+            store_phone   = s.get("phone") or "+998900000000"
+
+    dlat, dlon = order.get("lat"), order.get("lon")
+    if not (pickup_lat and pickup_lon and dlat and dlon):
+        return False, "GPS koordinatalari to'liq emas (do'kon yoki buyurtma joylashuvi yo'q)"
+
+    payload = {
+        "callback_url": "",
+        "comment": f"Buyurtma #{oid}: {order.get('items','')}",
+        "items": [{"title": "Ovqat", "size": "S", "quantity": 1,
+                   "price": order.get("total", 0), "payment_method": "already_paid"}],
+        "route_points": [
+            {"visit_order": 1, "type": "source",
+             "address": {"fullname": store_address, "coordinates": [pickup_lon, pickup_lat]},
+             "contact": {"name": "Restoran", "phone": store_phone}},
+            {"visit_order": 2, "type": "destination",
+             "address": {"fullname": order.get("address","Manzil"), "coordinates": [dlon, dlat]},
+             "contact": {"name": order.get("full_name","Mijoz"),
+                         "phone": order.get("phone", "+998900000000")}},
+        ],
+        "skip_door_to_door": False,
+    }
+    headers = {"Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
+               "Content-Type": "application/json", "Accept-Language": "uz"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={oid}_{int(time.time())}",
+                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                result = await resp.json()
+                if resp.status in (200, 201):
+                    claim_id = result.get("id", "")
+                    db_execute("UPDATE orders SET yandex_claim_id=?, yandex_status='new', status='IN_DELIVERY' WHERE id=?",
+                               (claim_id, oid))
+                    return True, claim_id
+                else:
+                    return False, result.get("message") or str(result)
+    except Exception as e:
+        logger.exception(f"Yandex error: {e}")
+        return False, str(e)
+
+
+@router.callback_query(F.data.startswith("adm_accept:"))
+async def adm_accept(cb: CallbackQuery):
+    """Admin accepts order → IN_PROGRESS, show 'Tayyor' button."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
+
+    db_execute("UPDATE orders SET status='IN_PROGRESS', accepted_by_id=?, accepted_by_name=?, accepted_at=? WHERE id=?",
+               (cb.from_user.id, cb.from_user.full_name, now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=admin_order_kb_ready(oid))
+    except Exception: pass
+    await cb.answer("✅ Qabul qilindi!")
+
+    uid = order.get("created_by_id")
+    if uid:
+        try:
+            await cb.bot.send_message(int(uid),
+                f"🔧 <b>Buyurtma #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda 🍔",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_ready:"))
+async def adm_ready(cb: CallbackQuery):
+    """Admin marks order READY → open Yandex Go app via deep link."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
+
+    dlat = order.get("lat")
+    dlon = order.get("lon")
+    addr = order.get("address", "Manzil ko'rsatilmagan")
+
+    # Mark as IN_DELIVERY
+    db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
+    await cb.answer("✅ Yetkazish boshlandi!")
+
+    # Build Yandex Go deep link (AppMetrica redirect — handles app not installed)
+    # If GPS available: opens Yandex Go with destination pre-filled
+    # If not installed: redirects to Play Store / App Store automatically
+    if dlat and dlon:
+        yandex_link = (
+            f"https://3.redirect.appmetrica.yandex.com/route"
+            f"?end-lat={dlat}&end-lon={dlon}"
+            f"&appId=ru.yandex.taxi"
+            f"&utm_source=lazzat_bot"
+        )
+        location_text = f"📍 {addr}\n🗺 GPS: {dlat:.5f}, {dlon:.5f}"
+    else:
+        # No GPS — open Yandex Go main page
+        yandex_link = "https://go.yandex/"
+        location_text = f"📍 {addr}\n⚠️ GPS yo'q — manzilni qo'lda kiriting"
+
+    phone = order.get("phone", "—")
+    full_name = order.get("full_name", "—")
+    items = order.get("items", "—")
+    total = order.get("total", 0)
+
+    # Send admin a rich message with Yandex Go button
+    yandex_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🚖 Yandex Go'da ochish",
+            url=yandex_link
+        )],
+        [InlineKeyboardButton(
+            text="🎉 Yetkazildi (qo'lda)",
+            callback_data=f"adm_done:{oid}"
+        )],
+    ])
+
+    await cb.message.answer(
+        f"🚗 <b>Buyurtma #{oid} — Yetkazishga chiqdi!</b>\n\n"
+        f"👤 {full_name}\n"
+        f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+        f"{location_text}\n\n"
+        f"🛒 {items}\n"
+        f"💰 {total:,} so'm\n\n"
+        f"Quyidagi tugmani bosing — Yandex Go ilovasi ochiladi.\n"
+        f"O'rnatilmagan bo'lsa, do'konga yo'naltiriladi.",
+        parse_mode="HTML",
+        reply_markup=yandex_kb
+    )
+    # Remove old keyboard from previous message
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+
+    # Notify assigned courier (from group) that food is ready for pickup
+    courier_id = order.get("delivery_courier_id")
+    if courier_id:
+        fee = order.get("delivery_fee") or 0
+        try:
+            await cb.bot.send_message(
+                int(courier_id),
+                f"✅ <b>Buyurtma #{oid} tayyor!</b>\n\n"
+                f"Do'konga borib olib keting 🏃\n"
+                f"📍 {order.get('address', '—')}\n\n"
+                f"💵 Yetkazish haqi: <b>{fee:,} so'm</b> (mijozdan olasiz)",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.warning(f"adm_ready courier notify failed: {e}")
+
+    # Notify user — send "Qabul qildim" button
+    uid = order.get("created_by_id")
+    if uid:
+        try:
+            await cb.bot.send_message(
+                int(uid),
+                f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\n"
+                f"Kuryer yaqinlashmoqda.\n"
+                f"Ovqatingizni olgandan so'ng tasdiqlang 👇",
+                parse_mode="HTML",
+                reply_markup=user_received_kb(oid)
+            )
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("user_received:"))
+async def user_received(cb: CallbackQuery):
+    """User confirms they received the order → notify admin, mark DELIVERED."""
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi", show_alert=True); return
+    if order.get("status") == "DELIVERED":
+        await cb.answer("Allaqachon tasdiqlangan", show_alert=True); return
+
+    closed_at = now_iso()
+    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (closed_at, oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("✅ Rahmat! Buyurtma tasdiqlandi.")
+
+    # ── Chek (receipt) userga ──────────────────────────────────────────────
+    store_name = "Do'kon"
+    store_emoji = "🏪"
+    delivery_fee = int(order.get("delivery_fee") or 0)
+    if order.get("store_id"):
+        s = db_fetchone("SELECT name, emoji FROM stores WHERE id=?", (order["store_id"],))
+        if s:
+            store_name  = s.get("name") or store_name
+            store_emoji = s.get("emoji") or store_emoji
+
+    dt_local = datetime.now(timezone.utc) + timedelta(hours=5)
+    date_str = dt_local.strftime("%d.%m.%Y %H:%M")
+
+    food_total = int(order.get("total") or 0)
+    items_str  = order.get("items") or "—"
+
+    receipt = (
+        f"🧾 <b>Buyurtma cheki</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"{store_emoji} <b>{store_name}</b>\n"
+        f"📅 {date_str}\n"
+        f"🔢 Buyurtma #{oid}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🛒 {items_str}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🍽 Ovqat:       <b>{food_total:,} so'm</b>\n"
+    )
+    if delivery_fee > 0:
+        receipt += f"🚗 Yetkazish:   <b>{delivery_fee:,} so'm</b>\n"
+        receipt += f"━━━━━━━━━━━━━━━━━\n"
+        receipt += f"💳 Jami:        <b>{food_total + delivery_fee:,} so'm</b>\n"
+    else:
+        receipt += f"━━━━━━━━━━━━━━━━━\n"
+        receipt += f"💳 Jami:        <b>{food_total:,} so'm</b>\n"
+    receipt += f"━━━━━━━━━━━━━━━━━\n✅ To'landi · Rahmat!"
+
+    try:
+        await cb.message.reply(receipt, parse_mode="HTML")
+    except Exception:
+        await cb.message.reply("🎉 Rahmat! Yaxshi ovqatlanishingizni tilaymiz! 😊")
+
+    # Notify store admin
+    admin_chat = order.get("target_chat_id") or order.get("accepted_by_id")
+    if admin_chat:
+        try:
+            await cb.bot.send_message(int(admin_chat),
+                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n"
+                f"👤 {order.get('full_name','-')}\n"
+                f"💰 Ovqat: {food_total:,} so'm"
+                + (f"\n🚗 Yetkazish: {delivery_fee:,} so'm (kuryerga)" if delivery_fee else "")
+                + "\n\n✅ Muvaffaqiyatli yakunlandi",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("courier_take:"))
+async def courier_take(cb: CallbackQuery):
+    """Courier in the group presses 'Men olaman!' — first one gets the order."""
+    if not cb.from_user: return
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order:
+        await cb.answer("Buyurtma topilmadi", show_alert=True); return
+
+    # Atomic claim — only succeeds if no courier assigned yet
+    if USE_PG:
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE orders SET delivery_courier_id=%s, delivery_courier_name=%s WHERE id=%s AND delivery_courier_id IS NULL",
+                    (cb.from_user.id, cb.from_user.full_name, oid)
+                )
+                claimed = cur.rowcount == 1
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute(
+                "UPDATE orders SET delivery_courier_id=?, delivery_courier_name=? WHERE id=? AND delivery_courier_id IS NULL",
+                (cb.from_user.id, cb.from_user.full_name, oid)
+            )
+            conn.commit()
+            claimed = cur.rowcount == 1
+
+    if not claimed:
+        order = get_order(oid)
+        taker = (order.get("delivery_courier_name") or "boshqa kuryer") if order else "boshqa kuryer"
+        await cb.answer(f"❌ Bu buyurtmani allaqachon {taker} oldi!", show_alert=True)
+        return
+
+    courier_name = cb.from_user.full_name or cb.from_user.first_name or "Kuryer"
+    fee = order.get("delivery_fee") or 0
+
+    # Edit group message to show who took it
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+        await cb.message.reply(
+            f"✅ <b>{courier_name}</b> buyurtmani qabul qildi!\n"
+            f"💵 Yetkazish haqi: <b>{fee:,} so'm</b>",
+            parse_mode="HTML"
+        )
+    except Exception: pass
+
+    await cb.answer(f"✅ Qabul qildingiz! {fee:,} so'm olasiz.")
+
+    # DM the courier with full order details
+    try:
+        addr  = order.get("address", "—")
+        phone = order.get("phone", "—")
+        name  = order.get("full_name", "—")
+        items = order.get("items", "—")
+        total = order.get("total", 0)
+        lat_o, lon_o = order.get("lat"), order.get("lon")
+
+        txt = (
+            f"🚗 <b>Buyurtma #{oid}</b>\n\n"
+            f"👤 {name}\n"
+            f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+            f"📍 {addr}\n\n"
+            f"🛒 {items}\n"
+            f"💰 Buyurtma: {total:,} so'm\n\n"
+            f"💵 <b>Sizning haqqingiz: {fee:,} so'm</b>\n"
+            f"<i>(Mijozdan yetkazgandan keyin oling)</i>\n\n"
+            f"Do'kon tayyorlagandan keyin xabar beriladi ✅"
+        )
+        await cb.bot.send_message(cb.from_user.id, txt, parse_mode="HTML")
+        if lat_o and lon_o:
+            try: await cb.bot.send_location(cb.from_user.id, lat_o, lon_o)
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"courier_take DM failed: {e}")
+
+    # Notify admin that a courier has taken the delivery
+    target_chat = order.get("target_chat_id")
+    if target_chat:
+        try:
+            await cb.bot.send_message(
+                int(target_chat),
+                f"🚗 <b>Kuryer topildi!</b>\n"
+                f"Buyurtma #{oid} → <b>{courier_name}</b>\n"
+                f"Ovqat tayyor bo'lganda kuryer xabardor qilinadi.",
+                parse_mode="HTML"
+            )
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_cancel:"))
+async def adm_cancel(cb: CallbackQuery):
+    oid = int(cb.data.split(":")[1])
+    order = get_order(oid)
+    if not order: await cb.answer("Topilmadi"); return
+
+    db_execute("UPDATE orders SET status='CANCELLED', closed_at=? WHERE id=?", (now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("❌ Bekor qilindi")
+
+    uid = order.get("created_by_id")
+    if uid:
+        try:
+            await cb.bot.send_message(int(uid),
+                f"❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nKechirasiz, qayta urinib ko'ring.",
+                parse_mode="HTML")
+        except Exception: pass
+
+
+@router.callback_query(F.data.startswith("adm_done:"))
+async def adm_done(cb: CallbackQuery):
+    """Manual delivery confirmation by admin."""
+    oid = int(cb.data.split(":")[1])
+    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), oid))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+    await cb.answer("🎉 Yetkazildi!")
+
+    order = get_order(oid)
+    uid = order.get("created_by_id") if order else None
+    if uid and order:
+        try:
+            store_name = "Do'kon"; store_emoji = "🏪"
+            if order.get("store_id"):
+                s = db_fetchone("SELECT name, emoji FROM stores WHERE id=?", (order["store_id"],))
+                if s: store_name = s.get("name") or store_name; store_emoji = s.get("emoji") or store_emoji
+            food_total   = int(order.get("total") or 0)
+            delivery_fee = int(order.get("delivery_fee") or 0)
+            dt_local     = datetime.now(timezone.utc) + timedelta(hours=5)
+            receipt = (
+                f"🧾 <b>Buyurtma cheki</b>\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{store_emoji} <b>{store_name}</b>\n"
+                f"📅 {dt_local.strftime('%d.%m.%Y %H:%M')}\n"
+                f"🔢 Buyurtma #{oid}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🛒 {order.get('items','—')}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🍽 Ovqat:       <b>{food_total:,} so'm</b>\n"
+            )
+            if delivery_fee > 0:
+                receipt += f"🚗 Yetkazish:   <b>{delivery_fee:,} so'm</b>\n"
+            receipt += f"━━━━━━━━━━━━━━━━━\n💳 Jami: <b>{food_total+delivery_fee:,} so'm</b>\n━━━━━━━━━━━━━━━━━\n✅ To'landi · Rahmat!"
+            await cb.bot.send_message(int(uid), receipt, parse_mode="HTML")
+        except Exception: pass
 
 
 # ================= CALLBACKS =================
@@ -490,9 +1488,10 @@ async def accept(cb: CallbackQuery):
     await cb.answer("✅ Qabul qilindi")
 
     mid = order.get('group_message_id')
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     if mid:
         try:
-            await cb.bot.edit_message_text(GROUP_CHAT_ID, int(mid), text=fmt_order(order), reply_markup=None,
+            await cb.bot.edit_message_text(chat_id, int(mid), text=fmt_order(order), reply_markup=None,
                                            parse_mode="HTML")
         except:
             pass
@@ -513,9 +1512,10 @@ async def done(cb: CallbackQuery):
     close_order(oid, "DELIVERED")
     order = get_order(oid) or order
     await cb.answer("✅ Yetkazildi")
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     mid = order.get('group_message_id')
     if mid:
-        try: await cb.bot.edit_message_text(GROUP_CHAT_ID, int(mid), text=fmt_order(order), reply_markup=None, parse_mode="HTML")
+        try: await cb.bot.edit_message_text(chat_id, int(mid), text=fmt_order(order), reply_markup=None, parse_mode="HTML")
         except: pass
     try: await cb.message.delete()
     except: pass
@@ -532,15 +1532,16 @@ async def cancel(cb: CallbackQuery):
         await cb.answer("Sizniki emas!"); return
     reset_order(oid)
     order = get_order(oid)
+    chat_id = order.get('target_chat_id') or GROUP_CHAT_ID
     await cb.answer("❌ Bekor qilindi")
     try:
         txt = fmt_order(order)
         if order.get('lat') and order.get('lon'):
-            loc_msg = await cb.bot.send_location(GROUP_CHAT_ID, order['lat'], order['lon'])
-            sent = await cb.bot.send_message(GROUP_CHAT_ID, txt, reply_to_message_id=loc_msg.message_id,
+            loc_msg = await cb.bot.send_location(chat_id, order['lat'], order['lon'])
+            sent = await cb.bot.send_message(chat_id, txt, reply_to_message_id=loc_msg.message_id,
                                              reply_markup=group_accept_kb(oid), parse_mode="HTML")
         else:
-            sent = await cb.bot.send_message(GROUP_CHAT_ID, txt, reply_markup=group_accept_kb(oid), parse_mode="HTML")
+            sent = await cb.bot.send_message(chat_id, txt, reply_markup=group_accept_kb(oid), parse_mode="HTML")
         set_group_message_id(oid, sent.message_id)
     except: pass
     try: await cb.message.delete()
@@ -623,7 +1624,7 @@ async def prod_emoji(msg: Message, state: FSMContext):
 async def prod_cat(msg: Message, state: FSMContext):
     d = await state.get_data()
     db_execute(
-        "INSERT INTO products (store_id, name, price, desc, emoji, cat) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat) VALUES (?, ?, ?, ?, ?, ?)",
         (d['store_id'], d['p_name'], d['p_price'], d['p_desc'], d['p_emoji'], msg.text)
     )
     await state.clear()
@@ -638,91 +1639,229 @@ async def handle_admin(request):
     return web.FileResponse('webapp/admin.html')
 
 async def handle_api_data(request):
+    # Optional region filter — users see only stores in their region
+    region = (request.query.get("region") or '').strip()
+    city   = (request.query.get("city")   or '').strip()
+
     stores_db = db_fetchall("SELECT * FROM stores")
     products_db = db_fetchall("SELECT * FROM products")
-    
+
     stores = []
     for s in stores_db:
+        s_region   = s.get('region')   or ''
+        s_city     = s.get('city')     or ''
+        s_district = s.get('district') or ''
+        # Apply region filter if user provided one
+        if region and s_region and s_region.lower() != region.lower():
+            continue
+        if city and s_city and s_city.lower() != city.lower():
+            continue
         stores.append({
             "id": s['id'],
-            "name": s['name'],
-            "emoji": s['emoji'],
-            "time": "15-30",
+            "name": s['name'] or '',
+            "emoji": s['emoji'] or '🍔',
+            "time": str(s['eta'] or 25),
             "rating": "5.0",
-            "type": s['type'],
-            "bg": s['bg_color'] or "linear-gradient(135deg, #a18cd1, #fbc2eb)"
+            "type": s['type'] or '',
+            "bg": s['bg_color'] or "linear-gradient(135deg, #a18cd1, #fbc2eb)",
+            "delivery_fee": s['delivery_fee'] or 15000,
+            "min_order": s['min_order'] or 50000,
+            "region": s_region,
+            "city": s_city,
+            "district": s_district,
+            "address": s.get('address') or '',
+            "phone": s.get('phone') or '',
+            "description": s.get('description') or '',
+            "hours_weekday": s.get('hours_weekday') or '09:00-22:00',
+            "hours_weekend": s.get('hours_weekend') or '10:00-23:00',
+            "is_open": s.get('is_open', 1),
+            "lat": s.get('lat'),
+            "lon": s.get('lon'),
         })
-        
+    visible_store_ids = {s['id'] for s in stores}
+
     menuItems = {}
     for p in products_db:
         sid = p['store_id']
+        # only include products for visible stores
+        if sid not in visible_store_ids:
+            continue
         if sid not in menuItems: menuItems[sid] = []
         menuItems[sid].append({
             "id": p['id'],
-            "name": p['name'],
-            "price": p['price'],
-            "desc": p['desc'],
-            "emoji": p['emoji'],
-            "cat": p['cat'],
+            "name": p['name'] or '',
+            "price": p['price'] or 0,
+            "desc": p.get('prod_desc') or p.get('desc') or '',
+            "emoji": p['emoji'] or '🍽️',
+            "cat": p['cat'] or '',
             "store_id": p['store_id'],
             "old_price": p['old_price'],
             "discount_qty": p['discount_qty'],
-            "discount_end": p['discount_end']
+            "discount_end": p['discount_end'],
+            "photo_url": p.get('photo_url') or '',
+            "is_featured":   p.get('is_featured') or 0,
+            "is_available":  1 if p.get('is_available', 1) else 0,
+            "stock_count":   p.get('stock_count'),  # None = unlimited
         })
-        
+
     return web.json_response({"stores": stores, "menuItems": menuItems})
 
 async def handle_admin_data(request):
     admin_id = request.query.get("admin_id")
-    if not admin_id: return web.json_response({"error": "admin_id required"}, status=400)
-    
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    store_id = request.query.get("store_id")  # optional: which branch
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
+
+    all_stores = db_fetchall("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    if store_id:
+        store = next((s for s in all_stores if str(s['id']) == str(store_id)), None) or (all_stores[0] if all_stores else None)
+    else:
+        store = all_stores[0] if all_stores else None
+
     products = []
     if store:
         products = db_fetchall("SELECT * FROM products WHERE store_id=?", (store['id'],))
-        
-    return web.json_response({"store": store, "products": products})
+
+    return web.json_response({"store": store, "products": products, "all_stores": all_stores})
 
 async def handle_update_store(request):
-    data = await request.json()
-    admin_id = data.get('admin_id')
-    name = data.get('name')
-    type_ = data.get('type')
-    emoji = data.get('emoji')
-    bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
-    
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
-    if store:
-        db_execute("UPDATE stores SET name=?, type=?, emoji=? WHERE admin_id=?", (name, type_, emoji, admin_id))
-    else:
-        db_execute("INSERT INTO stores (admin_id, name, type, emoji, bg_color) VALUES (?, ?, ?, ?, ?)", (admin_id, name, type_, emoji, bg))
-    return web.json_response({"status": "ok"})
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error(f"handle_update_store: bad JSON: {e}")
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    try:
+        admin_id = data.get('admin_id')
+        if not admin_id or int(admin_id) == 0:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        admin_id = int(admin_id)
+
+        name          = (data.get('name') or '').strip()
+        type_         = (data.get('type') or '').strip()
+        emoji         = (data.get('emoji') or '🍔').strip() or '🍔'
+        delivery_fee  = int(data.get('delivery_fee') or 15000)
+        eta           = int(data.get('eta') or 25)
+        radius        = float(data.get('radius') or 5)
+        min_order     = int(data.get('min_order') or 50000)
+        hours_weekday = str(data.get('hours_weekday') or '09:00-22:00')
+        hours_weekend = str(data.get('hours_weekend') or '10:00-23:00')
+        region        = (data.get('region') or '').strip()
+        city          = (data.get('city') or '').strip()
+        district      = (data.get('district') or '').strip()
+        address       = (data.get('address') or '').strip()
+        phone         = (data.get('phone') or '').strip()
+        description   = (data.get('description') or '').strip()
+        lat = data.get('lat')
+        lon = data.get('lon')
+        try: lat = float(lat) if lat is not None else None
+        except: lat = None
+        try: lon = float(lon) if lon is not None else None
+        except: lon = None
+        base_delivery_fee = int(data.get('base_delivery_fee') or 5000)
+        price_per_km      = int(data.get('price_per_km')      or 2000)
+        delivery_group_id = data.get('delivery_group_id')
+        try: delivery_group_id = int(delivery_group_id) if delivery_group_id else None
+        except: delivery_group_id = None
+        branch_label = (data.get('branch_label') or '').strip() or None
+        bg = "linear-gradient(135deg, #FF9A9E, #FECFEF)"
+
+        # If store_id passed — update that specific branch
+        edit_store_id = data.get('store_id')
+        if edit_store_id:
+            try: edit_store_id = int(edit_store_id)
+            except: edit_store_id = None
+
+        returned_id = edit_store_id
+        if edit_store_id:
+            db_execute(
+                "UPDATE stores SET name=?, type=?, emoji=?, delivery_fee=?, eta=?, radius=?, min_order=?, hours_weekday=?, hours_weekend=?, region=?, city=?, district=?, address=?, phone=?, description=?, lat=?, lon=?, base_delivery_fee=?, price_per_km=?, delivery_group_id=?, branch_label=? WHERE id=? AND admin_id=?",
+                (name, type_, emoji, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label, edit_store_id, admin_id)
+            )
+            logger.info(f"Store branch updated: id={edit_store_id} admin_id={admin_id} name={name}")
+        else:
+            # Create new branch — return new id so frontend sets curBranchId
+            if USE_PG:
+                conn = _pg_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            _pg("INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"),
+                            (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
+                        )
+                        returned_id = cur.fetchone()["id"]
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                with sqlite3.connect(DB_PATH) as conn:
+                    cur = conn.execute(
+                        "INSERT INTO stores (admin_id, name, type, emoji, bg_color, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (admin_id, name, type_, emoji, bg, delivery_fee, eta, radius, min_order, hours_weekday, hours_weekend, region, city, district, address, phone, description, lat, lon, base_delivery_fee, price_per_km, delivery_group_id, branch_label)
+                    )
+                    conn.commit()
+                    returned_id = cur.lastrowid
+            logger.info(f"Store branch created: id={returned_id} admin_id={admin_id} name={name}")
+
+        return web.json_response({"status": "ok", "name": name, "store_id": returned_id})
+
+    except Exception as e:
+        logger.exception(f"handle_update_store error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 async def handle_update_product(request):
-    data = await request.json()
-    admin_id = data.get('admin_id')
-    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
-    if not store: return web.json_response({"error": "Store not found"}, status=400)
-    
-    p_id = data.get('id')
-    name = data.get('name')
-    price = data.get('price')
-    desc = data.get('desc', '')
-    emoji = data.get('emoji')
-    cat = data.get('cat')
-    old_price = data.get('old_price')
-    discount_qty = data.get('discount_qty')
-    discount_end = data.get('discount_end')
-    
-    if p_id:
-        db_execute("""UPDATE products SET name=?, price=?, desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=? 
-                      WHERE id=? AND store_id=?""", 
-                   (name, price, desc, emoji, cat, old_price, discount_qty, discount_end, p_id, store['id']))
-    else:
-        db_execute("""INSERT INTO products (store_id, name, price, desc, emoji, cat, old_price, discount_qty, discount_end) 
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
-                   (store['id'], name, price, desc, emoji, cat, old_price, discount_qty, discount_end))
-    return web.json_response({"status": "ok"})
+    try:
+        data = await request.json()
+        admin_id = data.get('admin_id')
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        admin_id = int(admin_id)
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({
+                "error": "Do'kon topilmadi. Sozlama → Do'kon ma'lumotlari → Saqlash bosing (server qayta ishlaganda ma'lumotlar o'chadi)."
+            }, status=400)
+
+        p_id       = data.get('id')
+        name       = (data.get('name') or '').strip()
+        price      = int(data.get('price') or 0)
+        desc       = (data.get('desc') or data.get('prod_desc') or data.get('description') or '').strip()
+        emoji      = (data.get('emoji') or '🍽️').strip()
+        cat        = (data.get('cat') or '').strip()
+        old_price  = data.get('old_price') or None
+        disc_qty   = data.get('discount_qty') or None
+        disc_end   = data.get('discount_end') or None
+        photo_url  = (data.get('photo_url') or '').strip() or None
+        is_feat    = 1 if data.get('is_featured') else 0
+        is_avail    = 0 if data.get('is_available') == 0 else 1
+        stock_raw   = data.get('stock_count')
+        try:
+            stock_count = int(stock_raw) if stock_raw is not None and str(stock_raw).strip() != '' else None
+        except Exception:
+            stock_count = None
+
+        if not name:
+            return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
+
+        if p_id:
+            db_execute(
+                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=?, is_available=?, stock_count=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, stock_count, int(p_id), store['id'])
+            )
+        else:
+            db_execute(
+                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured, is_available, stock_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, stock_count)
+            )
+        logger.info(f"Product saved: store={store['id']} name={name}")
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        logger.exception(f"handle_update_product error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 async def handle_delete_product(request):
     data = await request.json()
@@ -733,11 +1872,1319 @@ async def handle_delete_product(request):
         db_execute("DELETE FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
     return web.json_response({"status": "ok"})
 
-# 1. Portni dinamik qiling (Kodingizning tepa qismida)
-WEBAPP_PORT = int(os.environ.get("PORT", 10000))
 
+async def handle_toggle_availability(request):
+    """Toggle product is_available (0/1) — quick stock control."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        p_id     = int(data.get('id') or 0)
+        if not admin_id or not p_id:
+            return web.json_response({"error": "admin_id and id required"}, status=400)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=400)
+        prod = db_fetchone("SELECT is_available FROM products WHERE id=? AND store_id=?", (p_id, store['id']))
+        if not prod:
+            return web.json_response({"error": "Product not found"}, status=404)
+        new_val = 0 if prod.get('is_available', 1) else 1
+        db_execute("UPDATE products SET is_available=? WHERE id=?", (new_val, p_id))
+        return web.json_response({"status": "ok", "is_available": new_val})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_place_order(request):
+    """HTTP order placement — used by mini-app instead of tg.sendData (more reliable)."""
+    try:
+        data = await request.json()
+        uid          = data.get("user_id") or 0
+        full_name    = (data.get("full_name") or "Mehmon").strip()
+        phone        = (data.get("phone") or "").strip()
+        address      = (data.get("address") or "").strip()
+        lat          = data.get("lat")
+        lon          = data.get("lon")
+        items        = data.get("items", "")
+        total        = int(data.get("total") or 0)
+        store_id     = data.get("store_id")
+        promo        = data.get("promo_code", "")
+        discount     = int(data.get("discount") or 0)
+        delivery_fee = int(data.get("delivery_fee") or 0)
+        delivery_km  = data.get("delivery_km")   # float or None, for display only
+
+        if not items:
+            return web.json_response({"error": "Savat bo'sh"}, status=400)
+        if not phone:
+            return web.json_response({"error": "Telefon raqami yo'q"}, status=400)
+
+        has_gps = (lat is not None) and (lon is not None)
+        if not address and not has_gps:
+            return web.json_response({"error": "Manzil yoki GPS yo'q"}, status=400)
+        if not address and has_gps:
+            address = f"GPS: {lat:.5f}, {lon:.5f}"
+
+        # Save phone
+        if uid:
+            try: db_execute("UPDATE users SET phone=? WHERE user_id=?", (phone, int(uid)))
+            except Exception: pass
+
+        # Find store + admin
+        store = None
+        confirmed_store = None   # store found by explicit store_id (used for stock)
+        admin_chat_id = None
+        if store_id is not None:
+            try:
+                store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+                confirmed_store = store
+            except Exception as e:
+                logger.warning(f"Store lookup failed store_id={store_id}: {e}")
+        if not store:
+            all_stores = db_fetchall("SELECT * FROM stores LIMIT 1")
+            if all_stores:
+                store = all_stores[0]
+        if store and store.get("admin_id"):
+            admin_chat_id = int(store["admin_id"])
+
+        target_chat = admin_chat_id or (GROUP_CHAT_ID if GROUP_CHAT_ID else 0)
+
+        # Save to DB (with delivery_fee)
+        oid = create_order(full_name, phone, address, lat, lon, items, total,
+                           uid or 0, full_name, store_id, target_chat, delivery_fee)
+        # Decrease stock counts — only for the confirmed store (not fallback)
+        try:
+            sid = confirmed_store['id'] if confirmed_store else None
+            if sid: _decrease_stock(items, sid)
+        except Exception as _e:
+            logger.warning(f"stock decrease error: {_e}")
+        logger.info(
+            f"[HTTP] Order #{oid}: user={uid} store={store_id} "
+            f"admin_chat={admin_chat_id} delivery_fee={delivery_fee}"
+        )
+
+        # ── Format admin notification ──────────────────────────────────────────
+        store_name  = (store.get("name")  or "Do'kon") if store else "Do'kon"
+        store_emoji = (store.get("emoji") or "🏪")     if store else "🏪"
+        loc_line, yandex_line = "", ""
+        if has_gps:
+            loc_line    = f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+            yandex_line = (f"\n🚖 <a href='https://taxi.yandex.com/route?"
+                           f"end-lat={lat}&end-lon={lon}&tariff=econom'>Yandex Go</a>")
+        promo_line = f"\n🎟️ {promo} (-{discount:,} so'm)" if promo else ""
+
+        # Delivery fee line for admin (shown separately so admin knows courier collects it)
+        if delivery_fee > 0:
+            km_str = f" ({delivery_km:.1f} km)" if delivery_km else ""
+            fee_line = f"\n🚗 Yetkazish haqi{km_str}: <b>{delivery_fee:,} so'm</b> (kuryerga to'lanadi)"
+        else:
+            fee_line = ""
+
+        admin_txt = (
+            f"🆕 <b>Yangi buyurtma #{oid}</b>\n"
+            f"{store_emoji} {store_name}\n\n"
+            f"👤 <b>{full_name}</b>\n"
+            f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+            f"📍 {address}{loc_line}{yandex_line}{promo_line}\n\n"
+            f"🛒 {items}\n"
+            f"💰 <b>Ovqat: {total:,} so'm</b>{fee_line}"
+        )
+
+        kb = admin_order_kb(oid)
+
+        async def _notify(chat_id: int, label: str):
+            if not chat_id: return None
+            try:
+                sent = await bot.send_message(chat_id, admin_txt,
+                                              parse_mode="HTML", reply_markup=kb)
+                if has_gps:
+                    try: await bot.send_location(chat_id, lat, lon,
+                                                 reply_to_message_id=sent.message_id)
+                    except Exception: pass
+                logger.info(f"Order #{oid} → {label}({chat_id}) ✓")
+                return sent
+            except Exception as e:
+                logger.error(f"Order #{oid} → {label}({chat_id}) ✗ {e}")
+                return None
+
+        sent = None
+        # Send ONLY to store admin's personal chat
+        if admin_chat_id:
+            sent = await _notify(admin_chat_id, "admin")
+        if not sent:
+            logger.error(f"Order #{oid}: admin_chat={admin_chat_id} — no notification sent!")
+
+        if sent:
+            set_group_message_id(oid, sent.message_id)
+
+        # ── Auto-send to courier group (if store has delivery_group_id) ───────
+        delivery_group_id = (store.get("delivery_group_id") if store else None)
+        if delivery_group_id and delivery_fee > 0:
+            try:
+                km_str = f" ({delivery_km:.1f} km)" if delivery_km else ""
+                group_txt = (
+                    f"🚗 <b>Yetkazish buyurtmasi #{oid}</b>\n\n"
+                    f"📍 {address}"
+                )
+                if has_gps:
+                    group_txt += f"\n🗺 <a href='https://maps.google.com/?q={lat},{lon}'>Xaritada ko'rish</a>"
+                group_txt += (
+                    f"\n\n🛒 {items}\n"
+                    f"💰 Buyurtma: {total:,} so'm\n\n"
+                    f"💵 <b>Yetkazish haqi{km_str}: {delivery_fee:,} so'm</b>\n"
+                    f"<i>(Pul mijozdan yetkazgandan keyin olinadi)</i>\n\n"
+                    f"⚡ Birinchi qabul qilgan kuryer oladi!"
+                )
+                g_sent = await bot.send_message(
+                    int(delivery_group_id), group_txt,
+                    parse_mode="HTML",
+                    reply_markup=courier_group_kb(oid, delivery_fee)
+                )
+                if has_gps:
+                    try:
+                        await bot.send_location(int(delivery_group_id), lat, lon,
+                                                reply_to_message_id=g_sent.message_id)
+                    except Exception: pass
+                logger.info(f"Order #{oid} → courier_group({delivery_group_id}) ✓")
+            except Exception as e:
+                logger.error(f"Order #{oid} → courier_group({delivery_group_id}) ✗ {e}")
+
+        return web.json_response({"status": "ok", "order_id": oid})
+
+    except Exception as e:
+        logger.exception(f"handle_place_order: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_delivery_fee(request):
+    """Calculate delivery fee based on user GPS and store location."""
+    try:
+        store_id = request.query.get("store_id")
+        ulat     = request.query.get("lat")
+        ulon     = request.query.get("lon")
+
+        if not store_id or not ulat or not ulon:
+            return web.json_response({"error": "store_id, lat, lon required"}, status=400)
+
+        store = db_fetchone("SELECT * FROM stores WHERE id=?", (int(store_id),))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=404)
+
+        result = calc_delivery_fee(store, float(ulat), float(ulon))
+        return web.json_response({
+            "fee":          result["fee"],
+            "distance_km":  result["distance_km"],
+            "available":    result["available"],
+            "reason":       result["reason"],
+            "base_fee":     store.get("base_delivery_fee") or 5000,
+            "price_per_km": store.get("price_per_km") or 2000,
+            "max_km":       store.get("radius") or 10,
+        })
+    except Exception as e:
+        logger.exception(f"delivery_fee: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_user_region(request):
+    """Save user's region preference."""
+    try:
+        data = await request.json()
+        uid = data.get('user_id')
+        region = (data.get('region') or '').strip()
+        if not uid:
+            return web.json_response({"error": "user_id required"}, status=400)
+        uid = int(uid)
+        db_execute("UPDATE users SET region=? WHERE user_id=?", (region, uid))
+        return web.json_response({"status": "ok", "region": region})
+    except Exception as e:
+        logger.exception(f"handle_user_region: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── PROMO CODES ──────────────────────────────────────────────────────────────
+async def handle_create_promo(request):
+    """Admin creates a promo code."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Avval do'kon yarating"}, status=400)
+
+        code = (data.get('code') or '').strip().upper()
+        if not code or len(code) < 3:
+            return web.json_response({"error": "Promo kod 3+ harfdan iborat bo'lsin"}, status=400)
+
+        discount_pct    = int(data.get('discount_pct') or 0)
+        discount_amount = int(data.get('discount_amount') or 0)
+        min_order       = int(data.get('min_order') or 0)
+        max_uses        = int(data.get('max_uses') or 0)
+        expires_at      = (data.get('expires_at') or '').strip() or None
+
+        # Check uniqueness
+        existing = db_fetchone("SELECT id FROM promo_codes WHERE code=?", (code,))
+        if existing:
+            return web.json_response({"error": "Bu kod allaqachon mavjud"}, status=400)
+
+        db_execute(
+            "INSERT INTO promo_codes (code, store_id, discount_pct, discount_amount, min_order, max_uses, used_count, expires_at, active, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 1, ?, ?)",
+            (code, store['id'], discount_pct, discount_amount, min_order, max_uses, expires_at, now_iso(), admin_id)
+        )
+        logger.info(f"Promo created: {code} by admin {admin_id}")
+        return web.json_response({"status": "ok", "code": code})
+    except Exception as e:
+        logger.exception(f"create_promo: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_list_promos(request):
+    """List promos for an admin's store."""
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"promos": []})
+    try:
+        admin_id = int(admin_id)
+    except ValueError:
+        return web.json_response({"promos": []})
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"promos": []})
+    promos = db_fetchall(
+        "SELECT * FROM promo_codes WHERE store_id=? ORDER BY created_at DESC",
+        (store['id'],)
+    )
+    return web.json_response({"promos": promos})
+
+
+async def handle_delete_promo(request):
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        promo_id = int(data.get('id') or 0)
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Store not found"}, status=400)
+        db_execute("DELETE FROM promo_codes WHERE id=? AND store_id=?", (promo_id, store['id']))
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_validate_promo(request):
+    """User validates a promo code at checkout."""
+    try:
+        data = await request.json()
+        code = (data.get('code') or '').strip().upper()
+        store_id = data.get('store_id')
+        user_id = data.get('user_id')
+        order_total = int(data.get('order_total') or 0)
+
+        if not code:
+            return web.json_response({"valid": False, "error": "Kod kiriting"}, status=400)
+
+        promo = db_fetchone("SELECT * FROM promo_codes WHERE code=? AND active=1", (code,))
+        if not promo:
+            return web.json_response({"valid": False, "error": "Bunday promo kod yo'q"})
+
+        # Store match (None store_id = global, applies to all)
+        if promo['store_id'] and store_id and int(promo['store_id']) != int(store_id):
+            return web.json_response({"valid": False, "error": "Bu promo boshqa do'kon uchun"})
+
+        # Expires
+        if promo['expires_at']:
+            try:
+                exp = datetime.fromisoformat(promo['expires_at'].replace('Z', '+00:00'))
+                if datetime.now(timezone.utc) > exp:
+                    return web.json_response({"valid": False, "error": "Promo muddati tugagan"})
+            except Exception:
+                pass
+
+        # Max uses
+        if promo['max_uses'] and (promo['used_count'] or 0) >= promo['max_uses']:
+            return web.json_response({"valid": False, "error": "Promo limiti tugagan"})
+
+        # Min order
+        if promo['min_order'] and order_total < promo['min_order']:
+            return web.json_response({
+                "valid": False,
+                "error": f"Minimal buyurtma {promo['min_order']:,} so'm"
+            })
+
+        # Per-user limit (only once per user)
+        if user_id:
+            try:
+                used = db_fetchone(
+                    "SELECT id FROM promo_uses WHERE promo_id=? AND user_id=?",
+                    (promo['id'], int(user_id))
+                )
+                if used:
+                    return web.json_response({"valid": False, "error": "Siz bu kodni ishlatib bo'lgansiz"})
+            except Exception:
+                pass
+
+        # Calculate discount
+        pct = promo['discount_pct'] or 0
+        amt = promo['discount_amount'] or 0
+        discount = max(int(order_total * pct / 100), amt)
+
+        return web.json_response({
+            "valid": True,
+            "promo_id": promo['id'],
+            "code": promo['code'],
+            "discount": discount,
+            "discount_pct": pct,
+            "discount_amount": amt,
+        })
+    except Exception as e:
+        logger.exception(f"validate_promo: {e}")
+        return web.json_response({"valid": False, "error": str(e)}, status=500)
+
+
+# ─── REFERRAL ─────────────────────────────────────────────────────────────────
+async def handle_referral_link(request):
+    """Get user's referral code/stats."""
+    uid = request.query.get("user_id")
+    if not uid:
+        return web.json_response({"error": "user_id required"}, status=400)
+    try:
+        uid = int(uid)
+    except ValueError:
+        return web.json_response({"error": "bad user_id"}, status=400)
+
+    invited = db_fetchall("SELECT * FROM referrals WHERE referrer_id=?", (uid,))
+    user = db_fetchone("SELECT bonus_balance FROM users WHERE user_id=?", (uid,))
+    return web.json_response({
+        "user_id": uid,
+        "invited_count": len(invited),
+        "bonus_balance": (user or {}).get('bonus_balance', 0),
+        "share_url": f"https://t.me/share/url?url=https://t.me/{os.getenv('BOT_USERNAME', 'zakaz_manager_uz_bot')}?start=ref{uid}"
+    })
+
+
+async def handle_orders(request):
+    """Buyurtmalar ro'yxati — admin paneli uchun."""
+    admin_id = request.query.get("admin_id")
+    store_id_param = request.query.get("store_id")
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
+
+    # Use explicit store_id if provided (branch switch), else fall back to first store
+    if store_id_param:
+        try:
+            store = db_fetchone("SELECT * FROM stores WHERE id=? AND admin_id=?",
+                                (int(store_id_param), admin_id_int))
+        except Exception:
+            store = None
+    else:
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+
+    if store:
+        orders = db_fetchall(
+            "SELECT * FROM orders WHERE store_id=? ORDER BY created_at DESC LIMIT 100",
+            (store['id'],)
+        )
+    elif admin_id_int in ADMIN_IDS:
+        orders = db_fetchall("SELECT * FROM orders ORDER BY created_at DESC LIMIT 100")
+    else:
+        orders = []
+
+    return web.json_response({"orders": orders})
+
+
+STATUS_MESSAGES = {
+    'IN_PROGRESS': "🔧 <b>Buyurtmangiz #{oid} qabul qilindi!</b>\n\nRestoran tayyorlamoqda. Tez orada tayyor bo'ladi.",
+    'READY':       "✅ <b>Buyurtma #{oid} tayyor!</b>\n\nKuryer yetkazib berishga chiqyapti.",
+    'IN_DELIVERY': "🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nTez orada sizga yetkazib beriladi. 📍",
+    'DELIVERED':   "🎉 <b>Buyurtma #{oid} yetkazib berildi!</b>\n\nBahomi bering. Yaxshi ovqatlanishingizni tilaymiz!",
+    'CANCELLED':   "❌ <b>Buyurtma #{oid} bekor qilindi.</b>\n\nSavollar bo'lsa qo'llab-quvvatlash bilan bog'laning.",
+}
+
+
+async def handle_order_status(request):
+    data = await request.json()
+    order_id = data.get('order_id')
+    status = data.get('status')
+    allowed = {'NEW', 'IN_PROGRESS', 'READY', 'IN_DELIVERY', 'DELIVERED', 'CANCELLED'}
+    if status not in allowed:
+        return web.json_response({"error": "invalid status"}, status=400)
+    if status == 'DELIVERED':
+        db_execute("UPDATE orders SET status=?, closed_at=? WHERE id=?", (status, now_iso(), order_id))
+    else:
+        db_execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+
+    # ── Notify user via bot ──
+    try:
+        order = db_fetchone("SELECT created_by_id FROM orders WHERE id=?", (order_id,))
+        if order and order.get('created_by_id') and status in STATUS_MESSAGES:
+            msg = STATUS_MESSAGES[status].format(oid=order_id)
+            await bot.send_message(int(order['created_by_id']), msg, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"order status notify failed: {e}")
+
+    return web.json_response({"status": "ok"})
+
+
+# ─── REGISTER ───
+async def handle_register(request):
+    data = await request.json()
+    uid = data.get('user_id')
+    if not uid:
+        return web.json_response({"error": "user_id required"}, status=400)
+    db_execute(
+        """INSERT INTO users (user_id, role, registered_at, first_name, last_name, username, language_code, photo_url, onboarded)
+           VALUES (?, 'user', ?, ?, ?, ?, ?, ?, 1)
+           ON CONFLICT(user_id) DO UPDATE SET
+             first_name=excluded.first_name,
+             last_name=excluded.last_name,
+             username=excluded.username,
+             language_code=excluded.language_code,
+             photo_url=excluded.photo_url,
+             onboarded=1""",
+        (uid, now_iso(),
+         data.get('first_name', ''), data.get('last_name', ''),
+         data.get('username', ''), data.get('language_code', 'uz'),
+         data.get('photo_url', ''))
+    )
+    return web.json_response({"status": "ok"})
+
+
+# ─── BRANDING ───
+async def handle_branding(request):
+    store_id = request.query.get("store_id")
+    admin_id = request.query.get("admin_id")
+    if store_id:
+        store = db_fetchone("SELECT * FROM stores WHERE id=?", (store_id,))
+    elif admin_id:
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    else:
+        return web.json_response({"error": "store_id or admin_id required"}, status=400)
+    if not store:
+        return web.json_response({"accent_color": "#FF6B35", "cover_url": None, "description": None, "phone": None, "address": None})
+    return web.json_response({
+        "accent_color": store.get("accent_color") or "#FF6B35",
+        "cover_url": store.get("cover_url"),
+        "description": store.get("description"),
+        "phone": store.get("phone"),
+        "address": store.get("address"),
+    })
+
+
+async def handle_update_branding(request):
+    data = await request.json()
+    admin_id = data.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+    fields = {k: data[k] for k in ("accent_color", "cover_url", "description", "phone", "address") if k in data}
+    if not fields:
+        return web.json_response({"status": "ok"})
+    set_clause = ", ".join(f"{k}=?" for k in fields)
+    db_execute(f"UPDATE stores SET {set_clause} WHERE admin_id=?", (*fields.values(), admin_id))
+    return web.json_response({"status": "ok"})
+
+
+# ─── ORDER TRACKING ───
+async def handle_order_track(request):
+    order_id = request.query.get("order_id")
+    user_id = request.query.get("user_id")
+    if not order_id:
+        return web.json_response({"error": "order_id required"}, status=400)
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,))
+    if not order:
+        return web.json_response({"error": "not found"}, status=404)
+    # Only allow the order creator or admins to track
+    if user_id and int(user_id) != order.get("created_by_id", 0) and int(user_id) not in ADMIN_IDS:
+        return web.json_response({"error": "forbidden"}, status=403)
+    status = order.get("status", "NEW")
+    steps = ["NEW", "IN_PROGRESS", "READY", "IN_DELIVERY", "DELIVERED"]
+    step_idx = steps.index(status) if status in steps else 0
+    return web.json_response({
+        "order_id": order["id"],
+        "status": status,
+        "step": step_idx,
+        "total_steps": len(steps),
+        "created_at": order.get("created_at"),
+        "accepted_at": order.get("accepted_at"),
+        "closed_at": order.get("closed_at"),
+        "courier": order.get("accepted_by_name"),
+    })
+
+
+# ─── RATINGS ───
+async def handle_submit_rating(request):
+    data = await request.json()
+    order_id = data.get("order_id")
+    user_id = data.get("user_id")
+    stars = data.get("stars")
+    comment = data.get("comment", "")
+    if not all([order_id, user_id, stars]):
+        return web.json_response({"error": "order_id, user_id, stars required"}, status=400)
+    if not (1 <= int(stars) <= 5):
+        return web.json_response({"error": "stars must be 1-5"}, status=400)
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,))
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+    try:
+        db_execute(
+            "INSERT INTO ratings (order_id, user_id, store_id, stars, comment, created_at) VALUES (?,?,?,?,?,?)",
+            (order_id, user_id, order.get("store_id"), stars, comment, now_iso())
+        )
+    except sqlite3.IntegrityError:
+        db_execute(
+            "UPDATE ratings SET stars=?, comment=?, created_at=? WHERE order_id=?",
+            (stars, comment, now_iso(), order_id)
+        )
+    return web.json_response({"status": "ok"})
+
+
+async def handle_ratings(request):
+    store_id = request.query.get("store_id")
+    admin_id = request.query.get("admin_id")
+    if admin_id:
+        store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+        store_id = store["id"] if store else None
+    if not store_id:
+        return web.json_response({"ratings": [], "avg": 0})
+    rows = db_fetchall("SELECT * FROM ratings WHERE store_id=? ORDER BY created_at DESC LIMIT 50", (store_id,))
+    avg = sum(r["stars"] for r in rows) / len(rows) if rows else 0
+    return web.json_response({"ratings": rows, "avg": round(avg, 1), "count": len(rows)})
+
+
+# ─── SUBSCRIPTION ───
+def _get_or_create_subscription(store_id, admin_id):
+    sub = db_fetchone("SELECT * FROM subscriptions WHERE store_id=?", (store_id,))
+    if not sub:
+        month = date.today().strftime("%Y-%m")
+        db_execute(
+            "INSERT INTO subscriptions (store_id, admin_id, plan, orders_this_month, billing_month, created_at) VALUES (?,?,?,?,?,?)",
+            (store_id, admin_id, "free", 0, month, now_iso())
+        )
+        sub = db_fetchone("SELECT * FROM subscriptions WHERE store_id=?", (store_id,))
+    # Reset monthly counter if new month
+    current_month = date.today().strftime("%Y-%m")
+    if sub and sub.get("billing_month") != current_month:
+        db_execute("UPDATE subscriptions SET orders_this_month=0, billing_month=? WHERE store_id=?", (current_month, store_id))
+        sub["orders_this_month"] = 0
+        sub["billing_month"] = current_month
+    return sub
+
+
+async def handle_subscription(request):
+    admin_id = request.query.get("admin_id")
+    if not admin_id:
+        return web.json_response({"error": "admin_id required"}, status=400)
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"plan": "free", "orders_this_month": 0, "limit": 50, "next_billing": None})
+    sub = _get_or_create_subscription(store["id"], int(admin_id))
+    limits = {"free": 50, "pro": 999999, "business": 999999}
+    plan = sub.get("plan", "free")
+    return web.json_response({
+        "plan": plan,
+        "orders_this_month": sub.get("orders_this_month", 0),
+        "limit": limits.get(plan, 50),
+        "next_billing": sub.get("next_billing"),
+    })
+
+
+async def handle_upgrade_subscription(request):
+    data = await request.json()
+    admin_id = data.get("admin_id")
+    plan = data.get("plan")
+    if plan not in ("free", "pro", "business"):
+        return web.json_response({"error": "invalid plan"}, status=400)
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id,))
+    if not store:
+        return web.json_response({"error": "store not found"}, status=404)
+    next_bill = (date.today() + timedelta(days=30)).isoformat()
+    db_execute(
+        "UPDATE subscriptions SET plan=?, next_billing=? WHERE store_id=?",
+        (plan, next_bill, store["id"])
+    )
+    return web.json_response({"status": "ok", "plan": plan})
+
+
+# ─── PAYME WEBHOOK ───
+_PAYME_STATE_CREATED = 1
+_PAYME_STATE_DONE = 2
+_PAYME_STATE_CANCELLED = -1
+_PAYME_STATE_CANCELLED_AFTER_DONE = -2
+
+
+def _payme_error(code, msg, data=None):
+    return web.json_response({"error": {"code": code, "message": {"uz": msg, "ru": msg, "en": msg}, "data": data}})
+
+
+async def handle_payme(request):
+    auth = request.headers.get("Authorization", "")
+    if PAYME_KEY and auth != f"Basic {PAYME_KEY}":
+        return web.json_response({"error": {"code": -32504, "message": {"uz": "Ruxsat yo'q"}}})
+    body = await request.json()
+    method = body.get("method")
+    params = body.get("params", {})
+    rid = body.get("id", 1)
+
+    def ok(result):
+        return web.json_response({"id": rid, "result": result})
+
+    if method == "CheckPerformTransaction":
+        order_id = params.get("account", {}).get("order_id")
+        order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+        if not order:
+            return _payme_error(-31050, "Buyurtma topilmadi", "order_id")
+        amount = params.get("amount", 0)
+        if amount != order["total"] * 100:
+            return _payme_error(-31001, "Noto'g'ri summa", "amount")
+        return ok({"allow": True})
+
+    elif method == "CreateTransaction":
+        tx_id = params.get("id")
+        order_id = params.get("account", {}).get("order_id")
+        amount = params.get("amount", 0)
+        order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+        if not order:
+            return _payme_error(-31050, "Buyurtma topilmadi", "order_id")
+        if amount != order["total"] * 100:
+            return _payme_error(-31001, "Noto'g'ri summa", "amount")
+        existing = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if existing:
+            if existing["state"] == _PAYME_STATE_CANCELLED:
+                return _payme_error(-31008, "Tranzaksiya bekor qilingan")
+            return ok({"create_time": int(existing["created_at"] or 0), "transaction": str(existing["id"]), "state": existing["state"]})
+        ts = int(time.time() * 1000)
+        db_execute(
+            "INSERT INTO transactions (provider, provider_tx_id, order_id, amount, state, created_at) VALUES (?,?,?,?,?,?)",
+            ("payme", tx_id, order_id, amount, _PAYME_STATE_CREATED, str(ts))
+        )
+        row = db_fetchone("SELECT id FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        return ok({"create_time": ts, "transaction": str(row["id"]), "state": _PAYME_STATE_CREATED})
+
+    elif method == "PerformTransaction":
+        tx_id = params.get("id")
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        if tx["state"] == _PAYME_STATE_DONE:
+            return ok({"transaction": str(tx["id"]), "perform_time": int(tx["performed_at"] or 0), "state": _PAYME_STATE_DONE})
+        if tx["state"] != _PAYME_STATE_CREATED:
+            return _payme_error(-31008, "Amalga oshirib bo'lmaydi")
+        ts = int(time.time() * 1000)
+        db_execute("UPDATE transactions SET state=?, performed_at=? WHERE provider_tx_id=?", (_PAYME_STATE_DONE, str(ts), tx_id))
+        db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), tx["order_id"]))
+        return ok({"transaction": str(tx["id"]), "perform_time": ts, "state": _PAYME_STATE_DONE})
+
+    elif method == "CancelTransaction":
+        tx_id = params.get("id")
+        reason = params.get("reason", 0)
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        if tx["state"] in (_PAYME_STATE_CANCELLED, _PAYME_STATE_CANCELLED_AFTER_DONE):
+            return ok({"transaction": str(tx["id"]), "cancel_time": int(tx["cancelled_at"] or 0), "state": tx["state"]})
+        new_state = _PAYME_STATE_CANCELLED_AFTER_DONE if tx["state"] == _PAYME_STATE_DONE else _PAYME_STATE_CANCELLED
+        ts = int(time.time() * 1000)
+        db_execute("UPDATE transactions SET state=?, cancelled_at=?, reason=? WHERE provider_tx_id=?", (new_state, str(ts), reason, tx_id))
+        return ok({"transaction": str(tx["id"]), "cancel_time": ts, "state": new_state})
+
+    elif method == "CheckTransaction":
+        tx_id = params.get("id")
+        tx = db_fetchone("SELECT * FROM transactions WHERE provider_tx_id=?", (tx_id,))
+        if not tx:
+            return _payme_error(-31003, "Tranzaksiya topilmadi")
+        return ok({
+            "create_time": int(tx["created_at"] or 0),
+            "perform_time": int(tx["performed_at"] or 0),
+            "cancel_time": int(tx["cancelled_at"] or 0),
+            "transaction": str(tx["id"]),
+            "state": tx["state"],
+            "reason": tx.get("reason"),
+        })
+
+    return web.json_response({"error": {"code": -32601, "message": {"uz": "Method topilmadi"}}})
+
+
+# ─── CLICK WEBHOOK ───
+async def handle_click(request):
+    data = await request.post()
+    click_trans_id = data.get("click_trans_id", "")
+    service_id = data.get("service_id", "")
+    merchant_trans_id = data.get("merchant_trans_id", "")  # order_id
+    amount = float(data.get("amount", 0))
+    action = int(data.get("action", 0))
+    sign_time = data.get("sign_time", "")
+    sign_string = data.get("sign_string", "")
+    error = int(data.get("error", 0))
+
+    # Verify signature
+    if CLICK_SECRET_KEY:
+        expected_sign = hashlib.md5(f"{click_trans_id}{service_id}{CLICK_SECRET_KEY}{merchant_trans_id}{amount}{action}{sign_time}".encode()).hexdigest()
+        if sign_string != expected_sign:
+            return web.json_response({"error": -1, "error_note": "SIGN CHECK FAILED!"})
+
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (merchant_trans_id,))
+    if not order:
+        return web.json_response({"error": -5, "error_note": "User does not exist"})
+    if abs(order["total"] - amount) > 1:
+        return web.json_response({"error": -2, "error_note": "Incorrect parameter amount"})
+
+    if action == 0:  # prepare
+        return web.json_response({
+            "click_trans_id": click_trans_id,
+            "merchant_trans_id": merchant_trans_id,
+            "merchant_prepare_id": merchant_trans_id,
+            "error": 0,
+            "error_note": "Success"
+        })
+    elif action == 1:  # complete
+        if error < 0:
+            return web.json_response({"click_trans_id": click_trans_id, "merchant_trans_id": merchant_trans_id, "merchant_confirm_id": None, "error": error, "error_note": "Payment cancelled"})
+        db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), merchant_trans_id))
+        return web.json_response({
+            "click_trans_id": click_trans_id,
+            "merchant_trans_id": merchant_trans_id,
+            "merchant_confirm_id": merchant_trans_id,
+            "error": 0,
+            "error_note": "Success"
+        })
+    return web.json_response({"error": -3, "error_note": "Action not found"})
+
+
+# ─── YANDEX DELIVERY ───
+def _yandex_headers():
+    return {
+        "Authorization": f"Bearer {YANDEX_DELIVERY_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept-Language": "ru",
+    }
+
+
+async def handle_yandex_price(request):
+    """Yetkazish narxini hisoblash — admin panel uchun."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+
+    # Do'kon manzilini olish
+    store = db_fetchone("SELECT * FROM stores WHERE id=?", (order.get("store_id"),)) if order.get("store_id") else None
+    store_lat = data.get("store_lat") or 41.2995
+    store_lon = data.get("store_lon") or 69.2401
+
+    if not YANDEX_DELIVERY_TOKEN:
+        # Demo rejim — haqiqiy token bo'lmasa
+        return web.json_response({
+            "price": 25000,
+            "currency": "UZS",
+            "eta_min": 20,
+            "eta_max": 40,
+            "demo": True,
+        })
+
+    payload = {
+        "route_points": [
+            {
+                "coordinates": {"lat": store_lat, "lon": store_lon},
+                "fullname": store["address"] if store and store.get("address") else "Do'kon manzili",
+                "type": "source",
+            },
+            {
+                "coordinates": {"lat": order.get("lat") or 41.2995, "lon": order.get("lon") or 69.2401},
+                "fullname": order.get("address") or "Mijoz manzili",
+                "type": "destination",
+                "contact": {"name": order.get("full_name") or "Mijoz", "phone": order.get("phone") or ""},
+            },
+        ],
+        "items": [{"cost_value": str(order.get("total", 0)), "cost_currency": "UZS", "quantity": 1,
+                   "size": {"height": 0.3, "length": 0.4, "width": 0.3}, "weight": 2,
+                   "title": "Ovqat buyurtmasi"}],
+        "due": None,
+        "comment": f"Buyurtma #{order['id']}",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/check-price",
+                json=payload, headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                result = await resp.json()
+                if resp.status != 200:
+                    return web.json_response({"error": result}, status=resp.status)
+                price_data = result.get("price", {})
+                return web.json_response({
+                    "price": int(float(price_data.get("value", 25000))),
+                    "currency": price_data.get("currency", "UZS"),
+                    "eta_min": 20, "eta_max": 45,
+                })
+    except Exception as e:
+        logger.exception("Yandex price error")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_create(request):
+    """Yandex Delivery orqali kuryer chaqirish."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    store_lat = data.get("store_lat", 41.2995)
+    store_lon = data.get("store_lon", 69.2401)
+    store_name = data.get("store_name", "Do'kon")
+    store_phone = data.get("store_phone", "+998901234567")
+
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order:
+        return web.json_response({"error": "order not found"}, status=404)
+
+    if not YANDEX_DELIVERY_TOKEN:
+        # Demo rejim
+        fake_claim_id = f"demo-{order_id}-{int(time.time())}"
+        db_execute(
+            "UPDATE orders SET yandex_claim_id=?, yandex_status=?, delivery_type=?, yandex_tracking_url=? WHERE id=?",
+            (fake_claim_id, "estimating", "yandex",
+             f"https://taxi.yandex.uz/share/{fake_claim_id}", order_id)
+        )
+        return web.json_response({
+            "claim_id": fake_claim_id,
+            "status": "estimating",
+            "tracking_url": f"https://taxi.yandex.uz/share/{fake_claim_id}",
+            "demo": True,
+        })
+
+    import uuid
+    request_id = str(uuid.uuid4())
+    payload = {
+        "request_id": request_id,
+        "callback_properties": {"callback_url": f"{WEBAPP_URL}/api/yandex_webhook"},
+        "route_points": [
+            {
+                "coordinates": {"lat": store_lat, "lon": store_lon},
+                "fullname": store_name,
+                "type": "source",
+                "contact": {"name": store_name, "phone": store_phone},
+                "skip_confirmation": True,
+            },
+            {
+                "coordinates": {
+                    "lat": order.get("lat") or 41.2995,
+                    "lon": order.get("lon") or 69.2401,
+                },
+                "fullname": order.get("address") or "Mijoz manzili",
+                "type": "destination",
+                "contact": {
+                    "name": order.get("full_name") or "Mijoz",
+                    "phone": order.get("phone") or "+998900000000",
+                },
+            },
+        ],
+        "items": [
+            {
+                "cost_value": str(order.get("total", 0)),
+                "cost_currency": "UZS",
+                "droppof_point": 1,
+                "quantity": 1,
+                "size": {"height": 0.3, "length": 0.4, "width": 0.3},
+                "weight": 2,
+                "title": f"Buyurtma #{order['id']}",
+            }
+        ],
+        "comment": f"Buyurtma #{order['id']}: {order.get('items', '')[:100]}",
+        "requirements": {"taxi_class": "express"},
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/create?request_id={request_id}",
+                json=payload, headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                result = await resp.json()
+                if resp.status not in (200, 201):
+                    return web.json_response({"error": result}, status=resp.status)
+
+                claim_id = result.get("id", "")
+                status = result.get("status", "estimating")
+                tracking_url = f"https://taxi.yandex.uz/route/{claim_id}"
+
+                db_execute(
+                    "UPDATE orders SET yandex_claim_id=?, yandex_status=?, delivery_type=?, yandex_tracking_url=? WHERE id=?",
+                    (claim_id, status, "yandex", tracking_url, order_id)
+                )
+
+                # Confirm claim (accept price automatically)
+                await asyncio.sleep(2)
+                async with session.post(
+                    f"{YANDEX_DELIVERY_URL}/claims/accept?claim_id={claim_id}",
+                    json={"version": result.get("version", 1)},
+                    headers=_yandex_headers()
+                ) as _:
+                    pass
+
+                return web.json_response({
+                    "claim_id": claim_id,
+                    "status": status,
+                    "tracking_url": tracking_url,
+                })
+    except Exception as e:
+        logger.exception("Yandex create error")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_status(request):
+    """Yandex buyurtma holatini tekshirish."""
+    order_id = request.query.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order or not order.get("yandex_claim_id"):
+        return web.json_response({"error": "no yandex delivery"}, status=404)
+
+    claim_id = order["yandex_claim_id"]
+
+    if not YANDEX_DELIVERY_TOKEN or claim_id.startswith("demo-"):
+        return web.json_response({
+            "claim_id": claim_id,
+            "status": order.get("yandex_status", "estimating"),
+            "tracking_url": order.get("yandex_tracking_url"),
+            "demo": True,
+        })
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{YANDEX_DELIVERY_URL}/claims/info?claim_id={claim_id}",
+                headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                result = await resp.json()
+                status = result.get("status", "unknown")
+                db_execute("UPDATE orders SET yandex_status=? WHERE id=?", (status, order_id))
+                return web.json_response({
+                    "claim_id": claim_id,
+                    "status": status,
+                    "tracking_url": order.get("yandex_tracking_url"),
+                    "courier": result.get("performer_info", {}).get("name"),
+                    "courier_phone": result.get("performer_info", {}).get("phone"),
+                })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_yandex_webhook(request):
+    """Yandex Delivery status webhook."""
+    try:
+        data = await request.json()
+        claim_id = data.get("id")
+        status = data.get("status")
+        if claim_id and status:
+            order = db_fetchone("SELECT * FROM orders WHERE yandex_claim_id=?", (claim_id,))
+            if order:
+                db_execute("UPDATE orders SET yandex_status=? WHERE yandex_claim_id=?", (status, claim_id))
+                if status in ("delivered", "delivery_arrived"):
+                    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE yandex_claim_id=?",
+                               (now_iso(), claim_id))
+    except Exception:
+        pass
+    return web.json_response({"ok": True})
+
+
+async def handle_yandex_cancel(request):
+    """Yandex kuryerini bekor qilish."""
+    data = await request.json()
+    order_id = data.get("order_id")
+    order = db_fetchone("SELECT * FROM orders WHERE id=?", (order_id,)) if order_id else None
+    if not order or not order.get("yandex_claim_id"):
+        return web.json_response({"error": "no yandex delivery"}, status=404)
+
+    claim_id = order["yandex_claim_id"]
+    if not YANDEX_DELIVERY_TOKEN or claim_id.startswith("demo-"):
+        db_execute("UPDATE orders SET yandex_status='cancelled', delivery_type='own' WHERE id=?", (order_id,))
+        return web.json_response({"status": "cancelled", "demo": True})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YANDEX_DELIVERY_URL}/claims/cancel?claim_id={claim_id}",
+                json={"cancel_state": "free", "version": 1},
+                headers=_yandex_headers(), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                db_execute("UPDATE orders SET yandex_status='cancelled', delivery_type='own' WHERE id=?", (order_id,))
+                return web.json_response({"status": "cancelled"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ─── DAILY REPORT BACKGROUND TASK ───
+async def daily_report_loop(bot: "Bot"):
+    while True:
+        now = datetime.now(timezone.utc)
+        # Schedule for 18:00 UTC (≈23:00 Tashkent +5)
+        target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target + timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            today = date.today().isoformat()
+            stores = db_fetchall("SELECT * FROM stores")
+            for store in stores:
+                sid = store["id"]
+                row = db_fetchone(
+                    "SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE store_id=? AND created_at LIKE ?",
+                    (sid, today + "%")
+                ) or {}
+                top = db_fetchall(
+                    """SELECT items, COUNT(*) as c FROM orders
+                       WHERE store_id=? AND created_at LIKE ?
+                       GROUP BY items ORDER BY c DESC LIMIT 3""",
+                    (sid, today + "%")
+                )
+                msg = (
+                    f"📊 <b>{store['name']} — Kunlik hisobot</b>\n"
+                    f"📅 {today}\n\n"
+                    f"📦 Buyurtmalar: <b>{row.get('cnt', 0)}</b>\n"
+                    f"💰 Tushum: <b>{row.get('rev', 0):,} so'm</b>\n"
+                )
+                if top:
+                    msg += "\n🔥 Top mahsulotlar:\n"
+                    for t in top:
+                        msg += f"  • {t['items']} ({t['c']} ta)\n"
+                try:
+                    await bot.send_message(store["admin_id"], msg, parse_mode="HTML")
+                except Exception:
+                    pass
+                # Update monthly order count in subscription
+                _get_or_create_subscription(sid, store["admin_id"])
+        except Exception as e:
+            logger.exception(f"Daily report error: {e}")
+
+
+def _decrease_stock(items_str: str, store_id: int):
+    """Parse order items string and decrease stock_count for each product."""
+    import re as _re2
+    if not items_str or not store_id:
+        return
+    prods = db_fetchall("SELECT id, name, stock_count FROM products WHERE store_id=? AND stock_count IS NOT NULL", (store_id,))
+    if not prods:
+        return
+    name_map = {p['name'].strip().lower(): p for p in prods}
+    for part in items_str.split(','):
+        part = part.strip()
+        m = _re2.match(r'^(.+?)\s+x(\d+)$', part)
+        if not m:
+            continue
+        raw_name = m.group(1).strip()
+        qty      = int(m.group(2))
+        # strip leading emoji chars
+        clean = _re2.sub(r'^[\U00010000-\U0010ffff☀-➿\s]+', '', raw_name).strip().lower()
+        prod = name_map.get(clean) or name_map.get(raw_name.lower())
+        if not prod:
+            continue
+        new_stock = max(0, int(prod['stock_count']) - qty)
+        is_avail  = 1 if new_stock > 0 else 0
+        db_execute("UPDATE products SET stock_count=?, is_available=? WHERE id=?",
+                   (new_stock, is_avail, prod['id']))
+
+
+async def handle_broadcast(request):
+    """Send Telegram message to all unique buyers of this store."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        text     = (data.get('text') or '').strip()
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        if not text:
+            return web.json_response({"error": "text required"}, status=400)
+        if len(text) > 4000:
+            return web.json_response({"error": "Xabar juda uzun (max 4000 belgi)"}, status=400)
+
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Do'kon topilmadi"}, status=400)
+
+        # All unique user IDs who ordered from this store (not the admin themselves)
+        rows = db_fetchall(
+            "SELECT DISTINCT created_by_id FROM orders WHERE store_id=? AND created_by_id IS NOT NULL AND created_by_id != 0",
+            (store['id'],)
+        )
+        user_ids = [r['created_by_id'] for r in rows if r.get('created_by_id') and r['created_by_id'] != admin_id]
+
+        store_name  = store.get('name') or "Do'kon"
+        store_emoji = store.get('emoji') or '🏪'
+        full_text   = f"{store_emoji} <b>{store_name}</b>\n\n{text}"
+
+        sent = 0
+        for uid in user_ids:
+            try:
+                await bot.send_message(int(uid), full_text, parse_mode="HTML")
+                sent += 1
+                await asyncio.sleep(0.05)  # 20 msg/s — Telegram rate limit
+            except Exception as e:
+                logger.warning(f"Broadcast skip uid={uid}: {e}")
+
+        logger.info(f"Broadcast by admin={admin_id} store={store['id']}: {sent}/{len(user_ids)} sent")
+        return web.json_response({"status": "ok", "sent": sent, "total": len(user_ids)})
+    except Exception as e:
+        logger.exception(f"broadcast: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_customers(request):
+    """Customers list for a store — grouped by buyer, sorted by order count."""
+    admin_id = request.query.get("admin_id")
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid"}, status=400)
+
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id_int,))
+    if store:
+        rows = db_fetchall(
+            """SELECT MAX(full_name) as full_name, MAX(phone) as phone, created_by_id,
+                      COUNT(*) as order_count,
+                      COALESCE(SUM(total),0) as total_spent,
+                      MAX(created_at) as last_order
+               FROM orders
+               WHERE store_id=? AND status != 'CANCELLED'
+               GROUP BY created_by_id
+               ORDER BY order_count DESC, total_spent DESC
+               LIMIT 200""",
+            (store['id'],)
+        )
+    elif admin_id_int in ADMIN_IDS:
+        rows = db_fetchall(
+            """SELECT MAX(full_name) as full_name, MAX(phone) as phone, created_by_id,
+                      COUNT(*) as order_count,
+                      COALESCE(SUM(total),0) as total_spent,
+                      MAX(created_at) as last_order
+               FROM orders WHERE status != 'CANCELLED'
+               GROUP BY created_by_id
+               ORDER BY order_count DESC, total_spent DESC
+               LIMIT 200"""
+        )
+    else:
+        rows = []
+
+    return web.json_response({"customers": rows})
+
+
+async def handle_stats(request):
+    admin_id = request.query.get("admin_id")
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid admin_id"}, status=400)
+
+    store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id_int,))
+    if not store and admin_id_int not in ADMIN_IDS:
+        return web.json_response({"today_orders":0,"today_revenue":0,"week_orders":0,"week_revenue":0,
+            "month_orders":0,"month_revenue":0,"total_orders":0,"total_revenue":0,
+            "active_deliveries":0,"weekly":[],"hourly":[],"top_products":[],
+            "commission_pct":PLATFORM_COMMISSION_PCT,"commission_today":0,"commission_week":0,"commission_month":0})
+    store_cond = " AND store_id=?" if store else ""
+    store_p    = (store['id'],) if store else ()
+
+    today_s  = date.today().isoformat()
+    week_s   = (date.today() - timedelta(days=6)).isoformat()
+    month_s  = (date.today() - timedelta(days=29)).isoformat()
+
+    def _q(where_extra, params):
+        return db_fetchone(
+            f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE {where_extra}{store_cond}",
+            params + store_p
+        ) or {}
+
+    today_row  = _q("created_at LIKE ?",            (today_s + '%',))
+    week_row   = _q("created_at >= ?",              (week_s,))
+    month_row  = _q("created_at >= ?",              (month_s,))
+    total_row  = _q("1=1",                          ())
+    active_row = db_fetchone(
+        f"SELECT COUNT(*) as cnt FROM orders WHERE status IN ('NEW','IN_PROGRESS'){store_cond}",
+        store_p
+    ) or {}
+
+    # Weekly chart (last 7 days)
+    weekly = []
+    for i in range(6, -1, -1):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        row = db_fetchone(
+            f"SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev FROM orders WHERE created_at LIKE ?{store_cond}",
+            (d + '%',) + store_p
+        ) or {}
+        weekly.append({"date": d, "count": row.get('cnt', 0), "revenue": row.get('rev', 0)})
+
+    # Hourly heatmap — real data for last 30 days
+    # Returns list of {hour, dow, cnt} where dow=0(Mon)..6(Sun)
+    all_orders = db_fetchall(
+        f"SELECT created_at FROM orders WHERE created_at >= ?{store_cond}",
+        (month_s,) + store_p
+    )
+    heat = {}  # (dow, hour) -> count
+    for o in all_orders:
+        try:
+            dt = datetime.fromisoformat((o['created_at'] or '').replace('Z', '+00:00'))
+            # Convert UTC to UTC+5 (Tashkent)
+            dt_local = dt + timedelta(hours=5)
+            dow  = dt_local.weekday()   # 0=Mon … 6=Sun
+            hour = (dt_local.hour // 2) * 2   # group into 2-hour buckets
+            heat[(dow, hour)] = heat.get((dow, hour), 0) + 1
+        except Exception:
+            pass
+    hourly = [{"dow": k[0], "hour": k[1], "cnt": v} for k, v in heat.items()]
+
+    # Top products — parse from order items strings (last 30 days)
+    prod_counts: dict[str, int] = {}
+    recent_orders = db_fetchall(
+        f"SELECT items FROM orders WHERE created_at >= ?{store_cond}",
+        (month_s,) + store_p
+    )
+    import re as _re
+    for o in recent_orders:
+        raw = o.get('items') or ''
+        # Format: "🍔 Burger x2, 🍟 Fri x1"
+        for part in raw.split(','):
+            part = part.strip()
+            m = _re.match(r'^(.*?)\s+x(\d+)$', part)
+            if m:
+                name = m.group(1).strip()
+                qty  = int(m.group(2))
+                prod_counts[name] = prod_counts.get(name, 0) + qty
+    top_products = sorted(prod_counts.items(), key=lambda x: -x[1])[:7]
+
+    # Commission calculation
+    def _commission(rev: int) -> int:
+        return int(rev * PLATFORM_COMMISSION_PCT / 100)
+
+    today_rev  = int(today_row.get('rev', 0))
+    week_rev   = int(week_row.get('rev', 0))
+    month_rev  = int(month_row.get('rev', 0))
+    total_rev  = int(total_row.get('rev', 0))
+
+    return web.json_response({
+        "today_orders":   int(today_row.get('cnt', 0)),
+        "today_revenue":  today_rev,
+        "week_orders":    int(week_row.get('cnt', 0)),
+        "week_revenue":   week_rev,
+        "month_orders":   int(month_row.get('cnt', 0)),
+        "month_revenue":  month_rev,
+        "total_orders":   int(total_row.get('cnt', 0)),
+        "total_revenue":  total_rev,
+        "active_deliveries": int(active_row.get('cnt', 0)),
+        "weekly":         weekly,
+        "hourly":         hourly,
+        "top_products":   [{"name": n, "cnt": c} for n, c in top_products],
+        "commission_pct":   PLATFORM_COMMISSION_PCT,
+        "commission_today": _commission(today_rev),
+        "commission_week":  _commission(week_rev),
+        "commission_month": _commission(month_rev),
+    })
 
 async def main():
+    global bot, dp  # make bot/dp accessible from HTTP handlers
+
     # 1. Ma'lumotlar bazasini yangilash
     init_db()
 
@@ -758,30 +3205,124 @@ async def main():
     app.router.add_get('/', handle_index)
     app.router.add_get('/index1.html', handle_index)
     app.router.add_get('/admin.html', handle_admin)
+    app.router.add_get('/onboarding.html', lambda r: web.FileResponse('webapp/onboarding.html'))
+    app.router.add_post('/api/register', handle_register)
     app.router.add_get('/api/data', handle_api_data)
     app.router.add_get('/api/admin_data', handle_admin_data)
     app.router.add_post('/api/store', handle_update_store)
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
+    app.router.add_post('/api/toggle_availability', handle_toggle_availability)
+    app.router.add_post('/api/user_region', handle_user_region)
+    app.router.add_get('/api/delivery_fee', handle_delivery_fee)
+    app.router.add_post('/api/order', handle_place_order)          # HTTP order (reliable)
+    # Promo codes
+    app.router.add_post('/api/promo', handle_create_promo)
+    app.router.add_get('/api/promos', handle_list_promos)
+    app.router.add_post('/api/delete_promo', handle_delete_promo)
+    app.router.add_post('/api/validate_promo', handle_validate_promo)
+    # Referrals
+    app.router.add_get('/api/referral', handle_referral_link)
+    app.router.add_get('/api/orders', handle_orders)
+    app.router.add_post('/api/broadcast', handle_broadcast)
+    app.router.add_get('/api/customers', handle_customers)
+    app.router.add_get('/api/stats', handle_stats)
+    app.router.add_post('/api/order_status', handle_order_status)
+    # Branding
+    app.router.add_get('/api/branding', handle_branding)
+    app.router.add_post('/api/branding', handle_update_branding)
+    # Order tracking
+    app.router.add_get('/api/order_track', handle_order_track)
+    # Ratings
+    app.router.add_post('/api/rating', handle_submit_rating)
+    app.router.add_get('/api/ratings', handle_ratings)
+    # Subscription
+    app.router.add_get('/api/subscription', handle_subscription)
+    app.router.add_post('/api/subscription', handle_upgrade_subscription)
+    # Payment webhooks
+    app.router.add_post('/api/payme', handle_payme)
+    app.router.add_post('/api/click', handle_click)
+    # Yandex Delivery
+    app.router.add_post('/api/yandex/price', handle_yandex_price)
+    app.router.add_post('/api/yandex/create', handle_yandex_create)
+    app.router.add_get('/api/yandex/status', handle_yandex_status)
+    app.router.add_post('/api/yandex/cancel', handle_yandex_cancel)
+    app.router.add_post('/api/yandex_webhook', handle_yandex_webhook)
+    # Landing page
+    app.router.add_get('/landing', lambda r: web.FileResponse('webapp/landing.html'))
 
     # Statik fayllar uchun (agar kerak bo'lsa)
     if os.path.exists("webapp"):
         app.router.add_static('/webapp/', path='webapp', name='webapp')
 
+    # ── Webhook handler ─────────────────────────────────────────────────────
+    WEBHOOK_PATH = "/webhook"
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "lazzat_secret_2026")
+
+    async def telegram_webhook(request: web.Request) -> web.Response:
+        """Receive updates from Telegram via webhook."""
+        # Verify secret token header (optional but secure)
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+            logger.warning("Webhook: invalid secret token")
+            return web.Response(status=403, text="Forbidden")
+        try:
+            data = await request.json()
+            update = Update.model_validate(data)
+            await dp.feed_update(bot=bot, update=update)
+        except Exception as e:
+            logger.exception(f"Webhook error: {e}")
+        return web.Response(text="ok")
+
+    app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+
     runner = web.AppRunner(app)
     await runner.setup()
 
-    # Render PORT'ida web-serverni ishga tushirish
     site = web.TCPSite(runner, '0.0.0.0', WEBAPP_PORT)
     await site.start()
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    # 5. Botni polling rejimida yoqish
-    # skip_updates=True eski kelgan xabarlarni o'chirib yuboradi
+    # 5. Set webhook with Telegram
+    webhook_url = f"{WEBAPP_URL}{WEBHOOK_PATH}"
+    logger.info(f"Setting webhook → {webhook_url}")
+    webhook_ok = False
     try:
-        await dp.start_polling(bot, skip_updates=True)
-    finally:
-        await bot.session.close()
+        await bot.set_webhook(
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "web_app_data"],
+        )
+        wh_info = await bot.get_webhook_info()
+        logger.info(
+            f"Webhook active: url={wh_info.url} "
+            f"pending={wh_info.pending_update_count} "
+            f"last_error={wh_info.last_error_message or 'none'}"
+        )
+        webhook_ok = (wh_info.url == webhook_url)
+    except Exception as e:
+        logger.error(f"set_webhook failed: {e}")
+
+    # 6. Kunlik hisobot fon vazifasi
+    asyncio.create_task(daily_report_loop(bot))
+
+    if webhook_ok:
+        # ── Webhook mode (preferred on Render) ──
+        logger.info("✅ Bot running in WEBHOOK mode")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await bot.delete_webhook(drop_pending_updates=False)
+            await bot.session.close()
+            logger.info("Bot stopped.")
+    else:
+        # ── Fallback: polling (local dev or if webhook URL wrong) ──
+        logger.warning("⚠️  Webhook failed — falling back to POLLING mode")
+        try:
+            await dp.start_polling(bot, skip_updates=True)
+        finally:
+            await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
