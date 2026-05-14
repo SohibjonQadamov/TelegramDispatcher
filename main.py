@@ -1062,53 +1062,82 @@ async def adm_accept(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("adm_ready:"))
 async def adm_ready(cb: CallbackQuery):
-    """Admin marks order READY → auto-call Yandex → send user 'Qabul qildim' button."""
+    """Admin marks order READY → open Yandex Go app via deep link."""
     oid = int(cb.data.split(":")[1])
     order = get_order(oid)
     if not order: await cb.answer("Topilmadi", show_alert=True); return
 
-    await cb.answer("⏳ Yandex kuryer chaqirilmoqda...")
+    dlat = order.get("lat")
+    dlon = order.get("lon")
+    addr = order.get("address", "Manzil ko'rsatilmagan")
 
-    if YANDEX_DELIVERY_TOKEN:
-        ok, result = await _call_yandex(order)
-        if ok:
-            await cb.message.answer(
-                f"🚖 <b>Yandex kuryer yo'lga chiqdi!</b>\nClaim: <code>{result}</code>",
-                parse_mode="HTML", reply_markup=admin_order_kb_delivering(oid)
-            )
-            # Notify user with "Qabul qildim" button
-            uid = order.get("created_by_id")
-            if uid:
-                try:
-                    await cb.bot.send_message(int(uid),
-                        f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nKuryer yaqin kelmoqda.\nOlganingizdan so'ng tasdiqlang:",
-                        parse_mode="HTML", reply_markup=user_received_kb(oid))
-                except Exception: pass
-        else:
-            # Yandex failed — set IN_DELIVERY manually, notify user anyway
-            db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
-            await cb.message.answer(f"⚠️ Yandex xato: {result}\nBuyurtma 'Yo'lda' ga o'tkazildi.",
-                                    reply_markup=admin_order_kb_delivering(oid))
-            uid = order.get("created_by_id")
-            if uid:
-                try:
-                    await cb.bot.send_message(int(uid),
-                        f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nOlganingizdan so'ng tasdiqlang:",
-                        parse_mode="HTML", reply_markup=user_received_kb(oid))
-                except Exception: pass
+    # Mark as IN_DELIVERY
+    db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
+    await cb.answer("✅ Yetkazish boshlandi!")
+
+    # Build Yandex Go deep link (AppMetrica redirect — handles app not installed)
+    # If GPS available: opens Yandex Go with destination pre-filled
+    # If not installed: redirects to Play Store / App Store automatically
+    if dlat and dlon:
+        yandex_link = (
+            f"https://3.redirect.appmetrica.yandex.com/route"
+            f"?end-lat={dlat}&end-lon={dlon}"
+            f"&appId=ru.yandex.taxi"
+            f"&utm_source=lazzat_bot"
+        )
+        location_text = f"📍 {addr}\n🗺 GPS: {dlat:.5f}, {dlon:.5f}"
     else:
-        # No Yandex token — just mark IN_DELIVERY
-        db_execute("UPDATE orders SET status='IN_DELIVERY' WHERE id=?", (oid,))
+        # No GPS — open Yandex Go main page
+        yandex_link = "https://go.yandex/"
+        location_text = f"📍 {addr}\n⚠️ GPS yo'q — manzilni qo'lda kiriting"
+
+    phone = order.get("phone", "—")
+    full_name = order.get("full_name", "—")
+    items = order.get("items", "—")
+    total = order.get("total", 0)
+
+    # Send admin a rich message with Yandex Go button
+    yandex_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🚖 Yandex Go'da ochish",
+            url=yandex_link
+        )],
+        [InlineKeyboardButton(
+            text="🎉 Yetkazildi (qo'lda)",
+            callback_data=f"adm_done:{oid}"
+        )],
+    ])
+
+    await cb.message.answer(
+        f"🚗 <b>Buyurtma #{oid} — Yetkazishga chiqdi!</b>\n\n"
+        f"👤 {full_name}\n"
+        f"📞 <a href='tel:{phone}'>{phone}</a>\n"
+        f"{location_text}\n\n"
+        f"🛒 {items}\n"
+        f"💰 {total:,} so'm\n\n"
+        f"Quyidagi tugmani bosing — Yandex Go ilovasi ochiladi.\n"
+        f"O'rnatilmagan bo'lsa, do'konga yo'naltiriladi.",
+        parse_mode="HTML",
+        reply_markup=yandex_kb
+    )
+    # Remove old keyboard from previous message
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception: pass
+
+    # Notify user — send "Qabul qildim" button
+    uid = order.get("created_by_id")
+    if uid:
         try:
-            await cb.message.edit_reply_markup(reply_markup=admin_order_kb_delivering(oid))
+            await cb.bot.send_message(
+                int(uid),
+                f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\n"
+                f"Kuryer yaqinlashmoqda.\n"
+                f"Ovqatingizni olgandan so'ng tasdiqlang 👇",
+                parse_mode="HTML",
+                reply_markup=user_received_kb(oid)
+            )
         except Exception: pass
-        uid = order.get("created_by_id")
-        if uid:
-            try:
-                await cb.bot.send_message(int(uid),
-                    f"🚗 <b>Buyurtma #{oid} yo'lda!</b>\n\nOlganingizdan so'ng tasdiqlang:",
-                    parse_mode="HTML", reply_markup=user_received_kb(oid))
-            except Exception: pass
 
 
 @router.callback_query(F.data.startswith("user_received:"))
