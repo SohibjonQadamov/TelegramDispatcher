@@ -49,7 +49,12 @@ DB_PATH = Path("orders.db")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()   # Neon/Render PostgreSQL URL
 USE_PG = bool(DATABASE_URL)
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
-WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://d0fc-213-230-80-60.ngrok-free.app"
+# Auto-detect URL: WEBAPP_URL env → RENDER_EXTERNAL_URL (set automatically by Render) → fallback
+WEBAPP_URL = (
+    os.getenv("WEBAPP_URL") or
+    os.getenv("RENDER_EXTERNAL_URL") or
+    "http://localhost:8080"
+).rstrip("/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("bot")
@@ -2620,30 +2625,46 @@ async def main():
     await site.start()
     logger.info(f"Web server started on port {WEBAPP_PORT}")
 
-    # 5. Set webhook with Telegram (drop old updates to avoid backlog)
+    # 5. Set webhook with Telegram
     webhook_url = f"{WEBAPP_URL}{WEBHOOK_PATH}"
+    logger.info(f"Setting webhook → {webhook_url}")
+    webhook_ok = False
     try:
         await bot.set_webhook(
             url=webhook_url,
             secret_token=WEBHOOK_SECRET,
             drop_pending_updates=True,
-            allowed_updates=["message", "callback_query", "web_app_data"]
+            allowed_updates=["message", "callback_query", "web_app_data"],
         )
-        logger.info(f"Webhook set: {webhook_url}")
+        wh_info = await bot.get_webhook_info()
+        logger.info(
+            f"Webhook active: url={wh_info.url} "
+            f"pending={wh_info.pending_update_count} "
+            f"last_error={wh_info.last_error_message or 'none'}"
+        )
+        webhook_ok = (wh_info.url == webhook_url)
     except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
+        logger.error(f"set_webhook failed: {e}")
 
     # 6. Kunlik hisobot fon vazifasi
     asyncio.create_task(daily_report_loop(bot))
 
-    # 7. Keep running (webhook handles updates, no polling loop needed)
-    logger.info("Bot is running in webhook mode. Waiting for updates...")
-    try:
-        await asyncio.Event().wait()   # runs forever until process killed
-    finally:
-        await bot.delete_webhook(drop_pending_updates=False)
-        await bot.session.close()
-        logger.info("Bot stopped, webhook removed.")
+    if webhook_ok:
+        # ── Webhook mode (preferred on Render) ──
+        logger.info("✅ Bot running in WEBHOOK mode")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await bot.delete_webhook(drop_pending_updates=False)
+            await bot.session.close()
+            logger.info("Bot stopped.")
+    else:
+        # ── Fallback: polling (local dev or if webhook URL wrong) ──
+        logger.warning("⚠️  Webhook failed — falling back to POLLING mode")
+        try:
+            await dp.start_polling(bot, skip_updates=True)
+        finally:
+            await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
