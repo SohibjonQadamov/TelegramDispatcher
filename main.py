@@ -2821,6 +2821,47 @@ async def daily_report_loop(bot: "Bot"):
             logger.exception(f"Daily report error: {e}")
 
 
+async def handle_customers(request):
+    """Customers list for a store — grouped by buyer, sorted by order count."""
+    admin_id = request.query.get("admin_id")
+    if not admin_id or admin_id == '0':
+        return web.json_response({"error": "admin_id required"}, status=400)
+    try:
+        admin_id_int = int(admin_id)
+    except ValueError:
+        return web.json_response({"error": "invalid"}, status=400)
+
+    store = db_fetchone("SELECT id FROM stores WHERE admin_id=?", (admin_id_int,))
+    if store:
+        rows = db_fetchall(
+            """SELECT full_name, phone, created_by_id,
+                      COUNT(*) as order_count,
+                      COALESCE(SUM(total),0) as total_spent,
+                      MAX(created_at) as last_order
+               FROM orders
+               WHERE store_id=? AND status != 'CANCELLED'
+               GROUP BY COALESCE(created_by_id, phone)
+               ORDER BY order_count DESC, total_spent DESC
+               LIMIT 200""",
+            (store['id'],)
+        )
+    elif admin_id_int in ADMIN_IDS:
+        rows = db_fetchall(
+            """SELECT full_name, phone, created_by_id,
+                      COUNT(*) as order_count,
+                      COALESCE(SUM(total),0) as total_spent,
+                      MAX(created_at) as last_order
+               FROM orders WHERE status != 'CANCELLED'
+               GROUP BY COALESCE(created_by_id, phone)
+               ORDER BY order_count DESC, total_spent DESC
+               LIMIT 200"""
+        )
+    else:
+        rows = []
+
+    return web.json_response({"customers": rows})
+
+
 async def handle_stats(request):
     admin_id = request.query.get("admin_id")
     if not admin_id or admin_id == '0':
@@ -2971,6 +3012,7 @@ async def main():
     # Referrals
     app.router.add_get('/api/referral', handle_referral_link)
     app.router.add_get('/api/orders', handle_orders)
+    app.router.add_get('/api/customers', handle_customers)
     app.router.add_get('/api/stats', handle_stats)
     app.router.add_post('/api/order_status', handle_order_status)
     # Branding
