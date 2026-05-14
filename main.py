@@ -2821,6 +2821,49 @@ async def daily_report_loop(bot: "Bot"):
             logger.exception(f"Daily report error: {e}")
 
 
+async def handle_broadcast(request):
+    """Send Telegram message to all unique buyers of this store."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        text     = (data.get('text') or '').strip()
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        if not text:
+            return web.json_response({"error": "text required"}, status=400)
+        if len(text) > 4000:
+            return web.json_response({"error": "Xabar juda uzun (max 4000 belgi)"}, status=400)
+
+        store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
+        if not store:
+            return web.json_response({"error": "Do'kon topilmadi"}, status=400)
+
+        # All unique user IDs who ordered from this store (not the admin themselves)
+        rows = db_fetchall(
+            "SELECT DISTINCT created_by_id FROM orders WHERE store_id=? AND created_by_id IS NOT NULL AND created_by_id != 0",
+            (store['id'],)
+        )
+        user_ids = [r['created_by_id'] for r in rows if r.get('created_by_id') and r['created_by_id'] != admin_id]
+
+        store_name  = store.get('name') or "Do'kon"
+        store_emoji = store.get('emoji') or '🏪'
+        full_text   = f"{store_emoji} <b>{store_name}</b>\n\n{text}"
+
+        sent = 0
+        for uid in user_ids:
+            try:
+                await bot.send_message(int(uid), full_text, parse_mode="HTML")
+                sent += 1
+            except Exception as e:
+                logger.warning(f"Broadcast skip uid={uid}: {e}")
+
+        logger.info(f"Broadcast by admin={admin_id} store={store['id']}: {sent}/{len(user_ids)} sent")
+        return web.json_response({"status": "ok", "sent": sent, "total": len(user_ids)})
+    except Exception as e:
+        logger.exception(f"broadcast: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def handle_customers(request):
     """Customers list for a store — grouped by buyer, sorted by order count."""
     admin_id = request.query.get("admin_id")
@@ -3012,6 +3055,7 @@ async def main():
     # Referrals
     app.router.add_get('/api/referral', handle_referral_link)
     app.router.add_get('/api/orders', handle_orders)
+    app.router.add_post('/api/broadcast', handle_broadcast)
     app.router.add_get('/api/customers', handle_customers)
     app.router.add_get('/api/stats', handle_stats)
     app.router.add_post('/api/order_status', handle_order_status)

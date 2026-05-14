@@ -1708,6 +1708,37 @@ function renderCustomers() {
   }).join('');
 }
 
+// ── BROADCAST ──
+async function sendBroadcast() {
+  const text = (document.getElementById('bcText')?.value || '').trim();
+  if (!text) { showToast('⚠️ Xabar matnini yozing!'); return; }
+  const btn = document.getElementById('bcBtn');
+  const res = document.getElementById('bcResult');
+  btn.disabled = true; btn.textContent = '⏳ Yuborilmoqda...';
+  try {
+    const r = await fetch('/api/broadcast', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({admin_id: ADMIN_ID, text})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    res.style.display = 'block';
+    res.style.background = 'var(--green-l)';
+    res.style.color = 'var(--green)';
+    res.textContent = `✅ ${d.sent} ta mijozga yuborildi!`;
+    document.getElementById('bcText').value = '';
+    showToast(`✅ ${d.sent} ta mijozga yuborildi!`);
+  } catch(e) {
+    res.style.display = 'block';
+    res.style.background = 'var(--red-l)';
+    res.style.color = 'var(--red)';
+    res.textContent = '❌ ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '📣 Yuborish';
+  }
+}
+
 function downloadReport() {
   showToast('📥 Hisobot yuklanmoqda...');
   setTimeout(() => showToast('✅ Hisobot tayyor! (Demo rejim)'), 1500);
@@ -1914,6 +1945,21 @@ function renderSettings() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
         Brendingni saqlash
       </button>
+    </div>
+
+    <!-- ===== BROADCAST ===== -->
+    <div class="card" style="display:flex;flex-direction:column;gap:12px">
+      <div class="card-title">📣 Xabar yuborish</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.4">Do'koningizdan buyurtma bergan <b>barcha mijozlarga</b> Telegram orqali xabar yuboring</div>
+      <div class="form-grp">
+        <label class="form-lbl">Xabar matni *</label>
+        <textarea id="bcText" class="form-inp" rows="3" placeholder="Bugun barcha taomlarimizda 20% chegirma! 🎉 Tez buyurtma bering 👇" style="resize:vertical;min-height:80px"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="bcCount" style="font-size:12px;color:var(--text3);flex:1"></span>
+        <button onclick="sendBroadcast()" style="padding:10px 20px;background:var(--red);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:14px;cursor:pointer;font-family:var(--font)" id="bcBtn">📣 Yuborish</button>
+      </div>
+      <div id="bcResult" style="display:none;padding:10px 12px;border-radius:10px;font-size:13px;font-weight:600"></div>
     </div>
 
     <!-- ===== PROMO CODES ===== -->
