@@ -1236,12 +1236,53 @@ async def user_received(cb: CallbackQuery):
     if order.get("status") == "DELIVERED":
         await cb.answer("Allaqachon tasdiqlangan", show_alert=True); return
 
-    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (now_iso(), oid))
+    closed_at = now_iso()
+    db_execute("UPDATE orders SET status='DELIVERED', closed_at=? WHERE id=?", (closed_at, oid))
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception: pass
     await cb.answer("✅ Rahmat! Buyurtma tasdiqlandi.")
-    await cb.message.reply("🎉 Rahmat! Yaxshi ovqatlanishingizni tilaymiz! 😊")
+
+    # ── Chek (receipt) userga ──────────────────────────────────────────────
+    store_name = "Do'kon"
+    store_emoji = "🏪"
+    delivery_fee = int(order.get("delivery_fee") or 0)
+    if order.get("store_id"):
+        s = db_fetchone("SELECT name, emoji FROM stores WHERE id=?", (order["store_id"],))
+        if s:
+            store_name  = s.get("name") or store_name
+            store_emoji = s.get("emoji") or store_emoji
+
+    dt_local = datetime.now(timezone.utc) + timedelta(hours=5)
+    date_str = dt_local.strftime("%d.%m.%Y %H:%M")
+
+    food_total = int(order.get("total") or 0)
+    items_str  = order.get("items") or "—"
+
+    receipt = (
+        f"🧾 <b>Buyurtma cheki</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"{store_emoji} <b>{store_name}</b>\n"
+        f"📅 {date_str}\n"
+        f"🔢 Buyurtma #{oid}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🛒 {items_str}\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"🍽 Ovqat:       <b>{food_total:,} so'm</b>\n"
+    )
+    if delivery_fee > 0:
+        receipt += f"🚗 Yetkazish:   <b>{delivery_fee:,} so'm</b>\n"
+        receipt += f"━━━━━━━━━━━━━━━━━\n"
+        receipt += f"💳 Jami:        <b>{food_total + delivery_fee:,} so'm</b>\n"
+    else:
+        receipt += f"━━━━━━━━━━━━━━━━━\n"
+        receipt += f"💳 Jami:        <b>{food_total:,} so'm</b>\n"
+    receipt += f"━━━━━━━━━━━━━━━━━\n✅ To'landi · Rahmat!"
+
+    try:
+        await cb.message.reply(receipt, parse_mode="HTML")
+    except Exception:
+        await cb.message.reply("🎉 Rahmat! Yaxshi ovqatlanishingizni tilaymiz! 😊")
 
     # Notify store admin
     admin_chat = order.get("target_chat_id") or order.get("accepted_by_id")
@@ -1250,8 +1291,9 @@ async def user_received(cb: CallbackQuery):
             await cb.bot.send_message(int(admin_chat),
                 f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n"
                 f"👤 {order.get('full_name','-')}\n"
-                f"💰 {order.get('total',0):,} so'm\n\n"
-                f"Buyurtma muvaffaqiyatli yakunlandi ✅",
+                f"💰 Ovqat: {food_total:,} so'm"
+                + (f"\n🚗 Yetkazish: {delivery_fee:,} so'm (kuryerga)" if delivery_fee else "")
+                + "\n\n✅ Muvaffaqiyatli yakunlandi",
                 parse_mode="HTML")
         except Exception: pass
 
@@ -1367,10 +1409,30 @@ async def adm_done(cb: CallbackQuery):
 
     order = get_order(oid)
     uid = order.get("created_by_id") if order else None
-    if uid:
+    if uid and order:
         try:
-            await cb.bot.send_message(int(uid),
-                f"🎉 <b>Buyurtma #{oid} yetkazildi!</b>\n\nRahmat! 😊", parse_mode="HTML")
+            store_name = "Do'kon"; store_emoji = "🏪"
+            if order.get("store_id"):
+                s = db_fetchone("SELECT name, emoji FROM stores WHERE id=?", (order["store_id"],))
+                if s: store_name = s.get("name") or store_name; store_emoji = s.get("emoji") or store_emoji
+            food_total   = int(order.get("total") or 0)
+            delivery_fee = int(order.get("delivery_fee") or 0)
+            dt_local     = datetime.now(timezone.utc) + timedelta(hours=5)
+            receipt = (
+                f"🧾 <b>Buyurtma cheki</b>\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{store_emoji} <b>{store_name}</b>\n"
+                f"📅 {dt_local.strftime('%d.%m.%Y %H:%M')}\n"
+                f"🔢 Buyurtma #{oid}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🛒 {order.get('items','—')}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🍽 Ovqat:       <b>{food_total:,} so'm</b>\n"
+            )
+            if delivery_fee > 0:
+                receipt += f"🚗 Yetkazish:   <b>{delivery_fee:,} so'm</b>\n"
+            receipt += f"━━━━━━━━━━━━━━━━━\n💳 Jami: <b>{food_total+delivery_fee:,} so'm</b>\n━━━━━━━━━━━━━━━━━\n✅ To'landi · Rahmat!"
+            await cb.bot.send_message(int(uid), receipt, parse_mode="HTML")
         except Exception: pass
 
 
