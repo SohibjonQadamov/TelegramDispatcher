@@ -1180,7 +1180,7 @@ function renderProds(filter) {
       <div class="pc-em" style="background:${PC_BG[i%PC_BG.length]};position:relative">
         ${p.emoji||'🍽️'}
         ${disc > 0 ? `<div class="pc-discount">-${disc}%</div>` : ''}
-        ${!avail ? `<div style="position:absolute;inset:0;background:rgba(0,0,0,.35);border-radius:inherit;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff">TUGDI</div>` : ''}
+        ${!avail ? `<div style="position:absolute;inset:0;background:rgba(0,0,0,.35);border-radius:inherit;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff">TUGADI</div>` : ''}
       </div>
       <div class="pc-body">
         <div class="pc-name">${p.name}</div>
@@ -1193,7 +1193,7 @@ function renderProds(filter) {
         <div class="pc-actions">
           <button class="pc-edit" onclick="editProd(${p.id})">✏️ Tahrir</button>
           <button onclick="toggleAvail(${p.id},this)" style="flex:1;padding:7px 4px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);background:${avail?'var(--orange-l)':'var(--green-l)'};color:${avail?'var(--orange)':'var(--green)'}">
-            ${avail?'⛔ Tugdi':'✅ Bor'}
+            ${avail?'⛔ Tugadi':'✅ Bor'}
           </button>
           <button class="pc-del" onclick="deleteProd(${p.id})">🗑️</button>
         </div>
@@ -1221,7 +1221,7 @@ async function toggleAvail(id, btn) {
     const p = products.find(x => x.id == id);
     if (p) p.is_available = d.is_available;
     renderProds();
-    showToast(d.is_available ? '✅ Mahsulot mavjud' : '⛔ Mahsulot tugadi');
+    showToast(d.is_available ? '✅ Mahsulot mavjud' : '⛔ Mahsulot tugadi ✓');
   } catch(e) { showToast('❌ ' + e.message); btn.disabled = false; }
 }
 
