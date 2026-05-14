@@ -1460,7 +1460,9 @@ async def handle_update_product(request):
         admin_id = int(admin_id)
         store = db_fetchone("SELECT * FROM stores WHERE admin_id=?", (admin_id,))
         if not store:
-            return web.json_response({"error": "Do'kon topilmadi. Avval do'kon yarating."}, status=400)
+            return web.json_response({
+                "error": "Do'kon topilmadi. Sozlama → Do'kon ma'lumotlari → Saqlash bosing (server qayta ishlaganda ma'lumotlar o'chadi)."
+            }, status=400)
 
         p_id       = data.get('id')
         name       = (data.get('name') or '').strip()
