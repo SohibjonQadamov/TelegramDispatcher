@@ -718,6 +718,11 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
         </div>
       </div>
       <div class="form-grp">
+        <label class="form-lbl">Ombor soni (bo'sh = cheksiz)</label>
+        <input class="form-inp" id="mStock" type="number" placeholder="masalan: 20" inputmode="numeric" min="0">
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">0 ga yetganda avtomatik "tugadi" bo'ladi</div>
+      </div>
+      <div class="form-grp">
         <label class="form-lbl">Kategoriya *</label>
         <input class="form-inp" id="mCat" placeholder="Burger, Lavash, Ichimlik...">
       </div>
@@ -1206,6 +1211,7 @@ function renderProds(filter) {
           ${p.old_price?`<span class="pc-old">${Number(p.old_price).toLocaleString()}</span>`:''}
         </div>
         ${discMeta ? `<div style="font-size:10px;color:var(--orange);font-weight:700;margin-top:4px">⏰ ${discMeta}</div>` : ''}
+        ${p.stock_count != null ? `<div style="font-size:10px;font-weight:700;margin-top:3px;color:${p.stock_count<=5?'var(--red)':'var(--green)'}">📦 ${p.stock_count} ta omborda</div>` : ''}
         <div class="pc-actions">
           <button class="pc-edit" onclick="editProd(${p.id})">✏️ Tahrir</button>
           <button onclick="toggleAvail(${p.id},this)" style="flex:1;padding:7px 4px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);background:${avail?'var(--orange-l)':'var(--green-l)'};color:${avail?'var(--orange)':'var(--green)'}">
@@ -1266,6 +1272,7 @@ function openModal(prod=null) {
   document.getElementById('mCat').value = prod ? prod.cat||'' : '';
   document.getElementById('mDesc').value = prod ? prod.desc||'' : '';
   document.getElementById('mFeatured').checked = !!(prod && prod.is_featured);
+  document.getElementById('mStock').value = (prod && prod.stock_count != null) ? prod.stock_count : '';
   document.getElementById('mPhotoUrl').value = prod?.photo_url || '';
   // Photo preview
   const box = document.getElementById('mPhotoBox');
@@ -1349,6 +1356,7 @@ async function saveProd() {
       discount_end: document.getElementById('mDiscEnd')?.value || null,
       photo_url:    document.getElementById('mPhotoUrl')?.value || null,
       is_featured:  document.getElementById('mFeatured')?.checked ? 1 : 0,
+      stock_count:  parseInt(document.getElementById('mStock')?.value) >= 0 ? parseInt(document.getElementById('mStock')?.value) : null,
     };
     const r = await fetch('/api/product', {
       method: 'POST',

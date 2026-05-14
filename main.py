@@ -298,6 +298,7 @@ def _init_db_pg():
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured INTEGER DEFAULT 0",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_available INTEGER DEFAULT 1",
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_count INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS name TEXT",
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER",
@@ -377,6 +378,7 @@ def _init_db_sqlite():
             "ALTER TABLE products ADD COLUMN photo_url TEXT",
             "ALTER TABLE products ADD COLUMN is_featured INTEGER DEFAULT 0",
             "ALTER TABLE products ADD COLUMN is_available INTEGER DEFAULT 1",
+            "ALTER TABLE products ADD COLUMN stock_count INTEGER",
             # products — ALL columns
             "ALTER TABLE products ADD COLUMN store_id INTEGER",
             "ALTER TABLE products ADD COLUMN name TEXT",
@@ -1619,6 +1621,7 @@ async def handle_api_data(request):
             "photo_url": p.get('photo_url') or '',
             "is_featured":   p.get('is_featured') or 0,
             "is_available":  1 if p.get('is_available', 1) else 0,
+            "stock_count":   p.get('stock_count'),  # None = unlimited
         })
 
     return web.json_response({"stores": stores, "menuItems": menuItems})
@@ -1724,20 +1727,25 @@ async def handle_update_product(request):
         disc_end   = data.get('discount_end') or None
         photo_url  = (data.get('photo_url') or '').strip() or None
         is_feat    = 1 if data.get('is_featured') else 0
-        is_avail   = 0 if data.get('is_available') == 0 else 1
+        is_avail    = 0 if data.get('is_available') == 0 else 1
+        stock_raw   = data.get('stock_count')
+        try:
+            stock_count = int(stock_raw) if stock_raw is not None and str(stock_raw).strip() != '' else None
+        except Exception:
+            stock_count = None
 
         if not name:
             return web.json_response({"error": "Mahsulot nomi majburiy"}, status=400)
 
         if p_id:
             db_execute(
-                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=?, is_available=? WHERE id=? AND store_id=?",
-                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, int(p_id), store['id'])
+                "UPDATE products SET name=?, price=?, prod_desc=?, emoji=?, cat=?, old_price=?, discount_qty=?, discount_end=?, photo_url=?, is_featured=?, is_available=?, stock_count=? WHERE id=? AND store_id=?",
+                (name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, stock_count, int(p_id), store['id'])
             )
         else:
             db_execute(
-                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured, is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail)
+                "INSERT INTO products (store_id, name, price, prod_desc, emoji, cat, old_price, discount_qty, discount_end, photo_url, is_featured, is_available, stock_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (store['id'], name, price, desc, emoji, cat, old_price, disc_qty, disc_end, photo_url, is_feat, is_avail, stock_count)
             )
         logger.info(f"Product saved: store={store['id']} name={name}")
         return web.json_response({"status": "ok"})
@@ -1830,6 +1838,12 @@ async def handle_place_order(request):
         # Save to DB (with delivery_fee)
         oid = create_order(full_name, phone, address, lat, lon, items, total,
                            uid or 0, full_name, store_id, target_chat, delivery_fee)
+        # Decrease stock counts for ordered products
+        try:
+            sid = store['id'] if store else None
+            if sid: _decrease_stock(items, sid)
+        except Exception as _e:
+            logger.warning(f"stock decrease error: {_e}")
         logger.info(
             f"[HTTP] Order #{oid}: user={uid} store={store_id} "
             f"admin_chat={admin_chat_id} delivery_fee={delivery_fee}"
@@ -2819,6 +2833,33 @@ async def daily_report_loop(bot: "Bot"):
                 _get_or_create_subscription(sid, store["admin_id"])
         except Exception as e:
             logger.exception(f"Daily report error: {e}")
+
+
+def _decrease_stock(items_str: str, store_id: int):
+    """Parse order items string and decrease stock_count for each product."""
+    import re as _re2
+    if not items_str or not store_id:
+        return
+    prods = db_fetchall("SELECT id, name, stock_count FROM products WHERE store_id=? AND stock_count IS NOT NULL", (store_id,))
+    if not prods:
+        return
+    name_map = {p['name'].strip().lower(): p for p in prods}
+    for part in items_str.split(','):
+        part = part.strip()
+        m = _re2.match(r'^(.+?)\s+x(\d+)$', part)
+        if not m:
+            continue
+        raw_name = m.group(1).strip()
+        qty      = int(m.group(2))
+        # strip leading emoji chars
+        clean = _re2.sub(r'^[\U00010000-\U0010ffff☀-➿\s]+', '', raw_name).strip().lower()
+        prod = name_map.get(clean) or name_map.get(raw_name.lower())
+        if not prod:
+            continue
+        new_stock = max(0, int(prod['stock_count']) - qty)
+        is_avail  = 1 if new_stock > 0 else 0
+        db_execute("UPDATE products SET stock_count=?, is_available=? WHERE id=?",
+                   (new_stock, is_avail, prod['id']))
 
 
 async def handle_broadcast(request):

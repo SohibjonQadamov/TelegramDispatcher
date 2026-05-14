@@ -1494,6 +1494,7 @@ function piHTML(p, i=0) {
         <span class="pi-price" style="${!avail?'color:var(--lbl3)':''}">${Number(p.price).toLocaleString()} so'm</span>
         ${p.old_price ? `<span class="pi-old">${Number(p.old_price).toLocaleString()}</span>` : ''}
         ${info ? `<span class="pi-qty-left">⏰ ${info}</span>` : ''}
+        ${avail && p.stock_count != null && p.stock_count <= 10 ? `<span style="font-size:10px;font-weight:700;color:${p.stock_count<=3?'#C62828':'#E65100'}">🔥 ${p.stock_count} ta qoldi</span>` : ''}
         ${!avail ? `<span style="font-size:10px;font-weight:700;color:#C62828">Tugadi</span>` : ''}
       </div>
     </div>
