@@ -1516,6 +1516,8 @@ function piHTML(p, i=0) {
 // ── STORE PAGE ──
 function openStore(id) {
   curStore = id; curMenuCat = 'all';
+  const inp = document.getElementById('menuSearchInp');
+  if (inp) inp.value = '';
   const s = stores.find(x => x.id == id);
   if (!s) return;
   const prods = menu[id] || [];
