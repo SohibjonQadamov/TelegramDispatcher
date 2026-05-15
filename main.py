@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import hashlib
@@ -1157,7 +1157,7 @@ async def adm_ready(cb: CallbackQuery):
             f"https://3.redirect.appmetrica.yandex.com/route"
             f"?end-lat={dlat}&end-lon={dlon}"
             f"&appId=ru.yandex.taxi"
-            f"&utm_source=lazzat_bot"
+            f"&utm_source=fudo_bot"
         )
         location_text = f"📍 {addr}\n🗺 GPS: {dlat:.5f}, {dlon:.5f}"
     else:
@@ -3257,7 +3257,7 @@ async def main():
 
     # ── Webhook handler ─────────────────────────────────────────────────────
     WEBHOOK_PATH = "/webhook"
-    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "lazzat_secret_2026")
+    WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "fudo_secret_2026")
 
     async def telegram_webhook(request: web.Request) -> web.Response:
         """Receive updates from Telegram via webhook."""
