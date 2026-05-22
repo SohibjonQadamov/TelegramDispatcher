@@ -1659,13 +1659,22 @@ async def prod_cat(msg: Message, state: FSMContext):
 
 
 # ================= AIOHTTP & MAIN =================
-_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+_NO_CACHE = {
+    "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+    "Pragma": "no-cache", "Expires": "0",
+    "Surrogate-Control": "no-store"
+}
+
+async def _serve_html(path: str) -> web.Response:
+    content = Path(path).read_text(encoding='utf-8')
+    return web.Response(text=content, content_type='text/html',
+                        charset='utf-8', headers=_NO_CACHE)
 
 async def handle_index(request):
-    return web.FileResponse('webapp/index1.html', headers=_NO_CACHE)
+    return await _serve_html('webapp/index1.html')
 
 async def handle_admin(request):
-    return web.FileResponse('webapp/admin.html', headers=_NO_CACHE)
+    return await _serve_html('webapp/admin.html')
 
 async def handle_api_data(request):
     # Optional region filter — users see only stores in their region
