@@ -855,6 +855,21 @@ async def webapp_handler(msg: Message, state: FSMContext):
     )
 
 
+# ================= ADMIN PANEL ==================
+@router.message(Command("admin"))
+async def admin_panel_cmd(msg: Message):
+    """Har kim /admin deb yozsa — admin panelga tugma chiqadi."""
+    if not msg.from_user: return
+    uid = msg.from_user.id
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="⚙️ Admin Panel",
+            web_app=WebAppInfo(url=WEBAPP_URL + "/admin.html")
+        )
+    ]])
+    await msg.answer("⚙️ Admin panelingiz:", reply_markup=kb)
+
+
 # ================= START =================
 @router.message(CommandStart())
 async def start(msg: Message, state: FSMContext):
