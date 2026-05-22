@@ -46,9 +46,12 @@ YANDEX_DELIVERY_URL = "https://b2b.taxi.yandex.net/b2b/cargo/integration/v2"
 if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise RuntimeError(".env ni to'ldiring")
 
-DB_PATH = Path("orders.db")
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()   # Neon/Render PostgreSQL URL
+DB_PATH = Path(os.getenv("DB_PATH", "/data/orders.db"))  # Render Disk: /data
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USE_PG = bool(DATABASE_URL)
+# Agar /data papka bo'lmasa (local ishga tushirish) — lokal fayl
+if not USE_PG and not DB_PATH.parent.exists():
+    DB_PATH = Path("orders.db")
 
 # ── Global bot / dispatcher — set in main(), used by HTTP handlers ──────────
 bot: "Bot | None" = None
@@ -1656,11 +1659,13 @@ async def prod_cat(msg: Message, state: FSMContext):
 
 
 # ================= AIOHTTP & MAIN =================
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
 async def handle_index(request):
-    return web.FileResponse('webapp/index1.html')
+    return web.FileResponse('webapp/index1.html', headers=_NO_CACHE)
 
 async def handle_admin(request):
-    return web.FileResponse('webapp/admin.html')
+    return web.FileResponse('webapp/admin.html', headers=_NO_CACHE)
 
 async def handle_api_data(request):
     # Optional region filter — users see only stores in their region
