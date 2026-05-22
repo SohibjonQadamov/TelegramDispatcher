@@ -3234,6 +3234,18 @@ async def main():
     me = await bot.get_me()
     logger.info(f"Bot started @{me.username}")
 
+    # Admin IDlarga avtomatik klaviatura yuborish
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"✅ <b>Fudo Bot ishga tushdi!</b>\n@{me.username}",
+                parse_mode="HTML",
+                reply_markup=main_kb(admin_id)
+            )
+        except Exception as e:
+            logger.warning(f"Admin {admin_id} ga xabar yuborilmadi: {e}")
+
     # 4. Web server sozlamalari (aiohttp)
     app = web.Application()
     app.router.add_get('/', handle_index)

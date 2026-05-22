@@ -202,14 +202,20 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 
 /* ===== DASHBOARD ===== */
 .welcome-bar{
-  background:var(--dark);
-  padding:16px 16px 20px;
+  background:linear-gradient(135deg,var(--dark) 60%,#2d1f1f);
+  padding:20px 16px 24px;
   margin-bottom:-10px;
+  position:relative;overflow:hidden;
 }
-.wb-greet{font-size:13px;color:rgba(255,255,255,0.55);font-weight:600}
-.wb-name{font-size:22px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin-top:2px}
-.wb-store{display:inline-flex;align-items:center;gap:6px;margin-top:8px;background:rgba(255,255,255,0.1);padding:6px 12px;border-radius:20px}
-.wb-store-txt{font-size:12px;font-weight:700;color:rgba(255,255,255,0.8)}
+.welcome-bar::after{content:'';position:absolute;right:-40px;top:-40px;width:180px;height:180px;
+  border-radius:50%;background:rgba(198,40,40,0.15);}
+.wb-greet{font-size:12px;color:rgba(255,255,255,0.5);font-weight:600;text-transform:uppercase;letter-spacing:0.8px}
+.wb-name{font-size:24px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin-top:3px}
+.wb-store{display:inline-flex;align-items:center;gap:8px;margin-top:10px;
+  background:rgba(198,40,40,0.25);border:1px solid rgba(198,40,40,0.4);
+  padding:6px 14px;border-radius:20px}
+.wb-store-txt{font-size:13px;font-weight:700;color:#fff}
+.wb-status-dot{width:8px;height:8px;border-radius:50%;background:#4CAF50;animation:pulse 2s infinite}
 .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:18px 16px 0}
 .stat-card{
   background:var(--white);border-radius:var(--rl);padding:14px 14px 16px;
@@ -512,9 +518,10 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
     <!-- ===== DASHBOARD ===== -->
     <div class="page active" id="page-dash">
       <div class="welcome-bar">
-        <div class="wb-greet">Xush kelibsiz 👋</div>
+        <div class="wb-greet">Boshqaruv paneli</div>
         <div class="wb-name" id="wbName">Admin</div>
         <div class="wb-store" id="wbStore" style="display:none">
+          <div class="wb-status-dot"></div>
           <span id="wbStoreEmoji">🍔</span>
           <span class="wb-store-txt" id="wbStoreName">Do'kon nomi</span>
         </div>
