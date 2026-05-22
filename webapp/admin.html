@@ -34,7 +34,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 .sp-title{font-size:28px;font-weight:900;color:#fff;letter-spacing:-1px;animation:fadeUp 0.45s 0.2s both}
 .sp-sub{font-size:13px;color:rgba(255,255,255,0.45);animation:fadeUp 0.45s 0.3s both}
 .sp-bar{width:48px;height:3px;background:rgba(255,255,255,0.12);border-radius:2px;margin-top:18px;overflow:hidden;animation:fadeUp 0.45s 0.4s both}
-.sp-fill{height:100%;background:var(--red);border-radius:2px;animation:barFill 1.5s 0.5s ease forwards;width:0}
+.sp-fill{height:100%;background:#fff;border-radius:2px;animation:barFill 1.5s 0.5s ease forwards;width:0}
 @keyframes popIn{from{opacity:0;transform:scale(0.4)rotate(-8deg)}to{opacity:1;transform:scale(1)rotate(0)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @keyframes barFill{to{width:100%}}
@@ -98,7 +98,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--b
 .page.leaving{opacity:0;transform:translateX(-16px)}
 
 /* ===== SHIMMER ===== */
-.shim{background:linear-gradient(90deg,#e5e5e0 25%,#f0f0eb 50%,#e5e5e0 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:var(--r)}
+.shim{background:linear-gradient(90deg,#E5E5EA 25%,#F2F2F7 50%,#E5E5EA 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:var(--r)}
 
 /* ===== BOTTOM NAV — floating pill ===== */
 /* Nav is outside #app so iOS backdrop-filter renders against real viewport content */
@@ -753,11 +753,7 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 <script>
 // Safe Telegram init — won't crash if window.Telegram isn't loaded yet
 const tg = window.Telegram?.WebApp || { initDataUnsafe:{}, expand:()=>{}, ready:()=>{}, HapticFeedback:{impactOccurred:()=>{}} };
-try {
-  tg.expand();
-  tg.ready();
-  if (tg.requestFullscreen) tg.requestFullscreen();
-} catch(e) {}
+try { tg.expand(); tg.ready(); } catch(e) {}
 
 // Telegram user ID — fallback to localStorage (set by index1.html onboarding)
 const ADMIN_ID = tg.initDataUnsafe?.user?.id || parseInt(localStorage.getItem('user_id') || '0');
