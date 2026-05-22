@@ -1873,6 +1873,25 @@ async def handle_delete_product(request):
     return web.json_response({"status": "ok"})
 
 
+async def handle_store_status(request):
+    """Open/close store — updates is_open in DB."""
+    try:
+        data = await request.json()
+        admin_id = int(data.get('admin_id') or 0)
+        is_open  = int(data.get('is_open', 1))
+        store_id = data.get('store_id')
+        if not admin_id:
+            return web.json_response({"error": "admin_id required"}, status=400)
+        if store_id:
+            db_execute("UPDATE stores SET is_open=? WHERE id=? AND admin_id=?",
+                       (is_open, int(store_id), admin_id))
+        else:
+            db_execute("UPDATE stores SET is_open=? WHERE admin_id=?", (is_open, admin_id))
+        return web.json_response({"status": "ok", "is_open": is_open})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def handle_toggle_availability(request):
     """Toggle product is_available (0/1) — quick stock control."""
     try:
@@ -3213,6 +3232,7 @@ async def main():
     app.router.add_post('/api/product', handle_update_product)
     app.router.add_post('/api/delete_product', handle_delete_product)
     app.router.add_post('/api/toggle_availability', handle_toggle_availability)
+    app.router.add_post('/api/store_status', handle_store_status)
     app.router.add_post('/api/user_region', handle_user_region)
     app.router.add_get('/api/delivery_fee', handle_delivery_fee)
     app.router.add_post('/api/order', handle_place_order)          # HTTP order (reliable)

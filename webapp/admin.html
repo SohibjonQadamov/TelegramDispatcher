@@ -837,6 +837,13 @@ async function loadAdminData(storeId) {
     allBranches = d.all_stores || (storeData ? [storeData] : []);
     if (storeData) {
       curBranchId = storeData.id;
+      isStoreOpen = storeData.is_open !== 0;  // DB dan haqiqiy holat
+      const btn = document.getElementById('storeStatusBtn');
+      const dot = document.getElementById('statusDot');
+      const txt = document.getElementById('statusTxt');
+      if (btn) btn.className = 'tb-store-status ' + (isStoreOpen ? 'open' : 'closed');
+      if (dot) dot.className = 'status-dot ' + (isStoreOpen ? 'open' : 'closed');
+      if (txt) txt.textContent = isStoreOpen ? 'Ochiq' : 'Yopiq';
       const wb = document.getElementById('wbStore');
       wb.style.display = 'inline-flex';
       document.getElementById('wbStoreEmoji').textContent = storeData.emoji || '🍔';
@@ -979,7 +986,7 @@ async function loadOrders() {
 }
 
 // ── STORE STATUS TOGGLE ──
-function toggleStoreOpen() {
+async function toggleStoreOpen() {
   isStoreOpen = !isStoreOpen;
   const btn = document.getElementById('storeStatusBtn');
   const dot = document.getElementById('statusDot');
@@ -995,6 +1002,14 @@ function toggleStoreOpen() {
     txt.textContent = 'Yopiq';
     showToast('🔴 Restoran yopiq deb belgilandi');
   }
+  // Backend ga saqlash
+  try {
+    await fetch('/api/store_status', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({admin_id: ADMIN_ID, store_id: curBranchId, is_open: isStoreOpen ? 1 : 0})
+    });
+  } catch(e) { console.error('toggleStoreOpen:', e); }
 }
 
 // ── DASHBOARD ──
