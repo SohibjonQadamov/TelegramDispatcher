@@ -202,31 +202,34 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 
 /* ===== DASHBOARD ===== */
 .welcome-bar{
-  background:linear-gradient(135deg,var(--dark) 60%,#2d1f1f);
-  padding:20px 16px 24px;
+  background:var(--dark);
+  padding:22px 18px 26px;
   margin-bottom:-10px;
   position:relative;overflow:hidden;
 }
-.welcome-bar::after{content:'';position:absolute;right:-40px;top:-40px;width:180px;height:180px;
-  border-radius:50%;background:rgba(198,40,40,0.15);}
-.wb-greet{font-size:12px;color:rgba(255,255,255,0.5);font-weight:600;text-transform:uppercase;letter-spacing:0.8px}
-.wb-name{font-size:24px;font-weight:900;color:#fff;letter-spacing:-0.5px;margin-top:3px}
-.wb-store{display:inline-flex;align-items:center;gap:8px;margin-top:10px;
-  background:rgba(198,40,40,0.25);border:1px solid rgba(198,40,40,0.4);
-  padding:6px 14px;border-radius:20px}
+.welcome-bar::before{content:'';position:absolute;right:-60px;top:-60px;width:220px;height:220px;
+  border-radius:50%;background:radial-gradient(circle,rgba(198,40,40,0.3) 0%,transparent 70%);}
+.welcome-bar::after{content:'';position:absolute;left:-40px;bottom:-40px;width:160px;height:160px;
+  border-radius:50%;background:radial-gradient(circle,rgba(198,40,40,0.12) 0%,transparent 70%);}
+.wb-greet{font-size:11px;color:rgba(255,255,255,0.45);font-weight:700;text-transform:uppercase;letter-spacing:1.2px}
+.wb-name{font-size:26px;font-weight:900;color:#fff;letter-spacing:-0.8px;margin-top:4px;line-height:1.1}
+.wb-store{display:inline-flex;align-items:center;gap:8px;margin-top:12px;
+  background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);
+  padding:8px 16px;border-radius:24px;backdrop-filter:blur(10px)}
 .wb-store-txt{font-size:13px;font-weight:700;color:#fff}
-.wb-status-dot{width:8px;height:8px;border-radius:50%;background:#4CAF50;animation:pulse 2s infinite}
+.wb-status-dot{width:8px;height:8px;border-radius:50%;background:#4CAF50;
+  box-shadow:0 0 8px rgba(76,175,80,0.8);animation:pulse 2s infinite}
 .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:18px 16px 0}
 .stat-card{
-  background:var(--white);border-radius:var(--rl);padding:14px 14px 16px;
-  box-shadow:var(--shadow);animation:scaleIn 0.3s ease;
-  position:relative;overflow:hidden;
+  background:var(--white);border-radius:20px;padding:16px;
+  box-shadow:0 2px 16px rgba(0,0,0,0.06);animation:scaleIn 0.3s ease;
+  position:relative;overflow:hidden;border:1px solid rgba(0,0,0,0.04);
 }
-.stat-card::after{content:'';position:absolute;top:-20px;right:-14px;width:70px;height:70px;border-radius:50%;opacity:0.07}
-.stat-icon{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:10px}
-.stat-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:var(--text2)}
-.stat-val{font-size:26px;font-weight:900;margin-top:2px;letter-spacing:-1px}
-.stat-trend{font-size:11px;font-weight:600;margin-top:3px;display:flex;align-items:center;gap:3px}
+.stat-card::after{content:'';position:absolute;top:-24px;right:-18px;width:90px;height:90px;border-radius:50%;opacity:0.08}
+.stat-icon{width:44px;height:44px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px}
+.stat-lbl{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3)}
+.stat-val{font-size:28px;font-weight:900;margin-top:3px;letter-spacing:-1.2px;color:var(--text)}
+.stat-trend{font-size:11px;font-weight:600;margin-top:4px;display:flex;align-items:center;gap:3px}
 .up{color:var(--green)}.down{color:var(--red)}
 
 /* ===== CHART ===== */
@@ -756,7 +759,11 @@ select.form-inp{-webkit-appearance:none;appearance:none;background-image:url("da
 <script>
 // Safe Telegram init — won't crash if window.Telegram isn't loaded yet
 const tg = window.Telegram?.WebApp || { initDataUnsafe:{}, expand:()=>{}, ready:()=>{}, HapticFeedback:{impactOccurred:()=>{}} };
-try { tg.expand(); tg.ready(); } catch(e) {}
+try {
+  tg.expand();
+  tg.ready();
+  if (tg.requestFullscreen) tg.requestFullscreen();
+} catch(e) {}
 
 // Telegram user ID — fallback to localStorage (set by index1.html onboarding)
 const ADMIN_ID = tg.initDataUnsafe?.user?.id || parseInt(localStorage.getItem('user_id') || '0');
