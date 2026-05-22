@@ -905,6 +905,15 @@ async def start(msg: Message, state: FSMContext):
         except Exception as e:
             logger.warning(f"Referral insert failed: {e}")
 
+    # Admin bo'lsa — har doim main_kb (Boshqaruv tugmasi bilan)
+    if is_admin(uid):
+        await msg.answer(
+            f"👋 Xush kelibsiz, <b>{msg.from_user.first_name}</b>! ⚙️",
+            reply_markup=main_kb(uid),
+            parse_mode="HTML"
+        )
+        return
+
     if not user or not user.get('onboarded'):
         # Yangi foydalanuvchi — onboarding yuborish
         kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -916,8 +925,8 @@ async def start(msg: Message, state: FSMContext):
         name = msg.from_user.first_name or "do'st"
         await msg.answer(
             f"👋 Salom, <b>{name}</b>!\n\n"
-            f"🍔 <b>FoodBot</b> ga xush kelibsiz!\n\n"
-            f"Telegram orqali ovqat buyurtma qiling, restoran oching, yetkazib berish — barchasi bir joyda.\n\n"
+            f"🍔 <b>Fudo</b> ga xush kelibsiz!\n\n"
+            f"Telegram orqali ovqat buyurtma qiling — tez, qulay, arzon!\n\n"
             f"⬇️ Boshlash uchun tugmani bosing:",
             reply_markup=kb,
             parse_mode="HTML"
